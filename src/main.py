@@ -159,12 +159,6 @@ def recommend(
     category = request.category.strip().upper()
     zone_scores = get_zone_scores(request.arSessionId, category)
 
-    if not request.interactions and zone_scores is None:
-        raise HTTPException(
-            status_code=400,
-            detail="No initialized preference for arSessionId and category",
-        )
-
     interactions = [
         interaction.model_dump()
         for interaction in request.interactions
