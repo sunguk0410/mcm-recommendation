@@ -86,14 +86,35 @@ class RecommendationResponse(BaseModel):
     recommendations: List[RecommendationItem]
 
 
+class AvatarLookRequest(BaseModel):
+    arSessionId: int
+
+
+class AvatarLookProduct(BaseModel):
+    productId: int
+
+
+class AvatarLookResponse(BaseModel):
+    arSessionId: int
+    styleIdentityTitle: str
+    products: List[AvatarLookProduct]
+
+
 ZONE_ALIASES = {
     "NEW_COLLECTION": "NEW",
 }
+
+AVATAR_LOOK_THRESHOLD = 0.6 
 
 
 # Process-local MVP storage. Preferences are reset whenever the server restarts.
 preferences: Dict[int, Dict[str, Dict[str, float]]] = {}
 preferences_lock = RLock()
+
+# Latest successful recommendation interactions per session. Like preferences,
+# these process-local values are reset whenever the server restarts.
+session_interactions: Dict[int, List[dict]] = {}
+session_interactions_lock = RLock()
 
 
 def store_preferences(ar_session_id, zone_interactions):
@@ -122,6 +143,45 @@ def get_zone_scores(ar_session_id, category):
     with preferences_lock:
         scores = preferences.get(ar_session_id, {}).get(category)
         return dict(scores) if scores is not None else None
+
+
+def store_session_interactions(ar_session_id, interactions):
+    with session_interactions_lock:
+        session_interactions[ar_session_id] = [dict(item) for item in interactions]
+
+
+def get_session_interactions(ar_session_id):
+    with session_interactions_lock:
+        return [
+            dict(item)
+            for item in session_interactions.get(ar_session_id, [])
+        ]
+
+
+def get_style_identity_title():
+    return "Your Signature Look"
+
+
+def normalize_avatar_scores(recommendations):
+    if not recommendations:
+        return []
+
+    scores = [item["score"] for item in recommendations]
+    minimum = min(scores)
+    maximum = max(scores)
+    score_range = maximum - minimum
+
+    return [
+        {
+            **item,
+            "normalizedScore": (
+                (item["score"] - minimum) / score_range
+                if score_range > 0
+                else 0.0
+            ),
+        }
+        for item in recommendations
+    ]
 
 
 @app.get("/health")
@@ -179,6 +239,65 @@ def recommend(
             detail=str(error),
         ) from error
 
+    store_session_interactions(request.arSessionId, interactions)
+
     return {
         "recommendations": recommendations
+    }
+
+
+@app.post(
+    "/recommendations/avatar-look",
+    response_model=AvatarLookResponse,
+)
+def recommend_avatar_look(request: AvatarLookRequest):
+    interactions = get_session_interactions(request.arSessionId)
+    categories = list(dict.fromkeys(
+        product.category
+        for product in recommender.products
+    ))
+
+    scored_products = []
+    for category in categories:
+        category_product_count = sum(
+            product.category == category
+            for product in recommender.products
+        )
+        recommendations = recommender.recommend(
+            interactions=interactions,
+            zone_scores=get_zone_scores(request.arSessionId, category),
+            category=category,
+            top_k=category_product_count,
+            exclude_seen=True,
+        )
+        scored_products.extend(
+            {
+                **item,
+                "category": category,
+            }
+            for item in recommendations
+        )
+
+    candidates = [
+        item
+        for item in normalize_avatar_scores(scored_products)
+        if item["normalizedScore"] >= AVATAR_LOOK_THRESHOLD
+    ]
+
+    best_by_category = {}
+    for candidate in candidates:
+        current = best_by_category.get(candidate["category"])
+        if (
+            current is None
+            or candidate["normalizedScore"] > current["normalizedScore"]
+        ):
+            best_by_category[candidate["category"]] = candidate
+
+    return {
+        "arSessionId": request.arSessionId,
+        "styleIdentityTitle": get_style_identity_title(),
+        "products": [
+            {"productId": item["productId"]}
+            for item in best_by_category.values()
+        ],
     }
