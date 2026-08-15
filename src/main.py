@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .avatar_look import select_avatar_look_products
 from .inference import RecRecInference
 
 
@@ -104,9 +105,6 @@ ZONE_ALIASES = {
     "NEW_COLLECTION": "NEW",
 }
 
-AVATAR_LOOK_THRESHOLD = 0.6 
-
-
 # Process-local MVP storage. Preferences are reset whenever the server restarts.
 preferences: Dict[int, Dict[str, Dict[str, float]]] = {}
 preferences_lock = RLock()
@@ -160,28 +158,6 @@ def get_session_interactions(ar_session_id):
 
 def get_style_identity_title():
     return "Your Signature Look"
-
-
-def normalize_avatar_scores(recommendations):
-    if not recommendations:
-        return []
-
-    scores = [item["score"] for item in recommendations]
-    minimum = min(scores)
-    maximum = max(scores)
-    score_range = maximum - minimum
-
-    return [
-        {
-            **item,
-            "normalizedScore": (
-                (item["score"] - minimum) / score_range
-                if score_range > 0
-                else 0.0
-            ),
-        }
-        for item in recommendations
-    ]
 
 
 @app.get("/health")
@@ -278,26 +254,13 @@ def recommend_avatar_look(request: AvatarLookRequest):
             for item in recommendations
         )
 
-    candidates = [
-        item
-        for item in normalize_avatar_scores(scored_products)
-        if item["normalizedScore"] >= AVATAR_LOOK_THRESHOLD
-    ]
-
-    best_by_category = {}
-    for candidate in candidates:
-        current = best_by_category.get(candidate["category"])
-        if (
-            current is None
-            or candidate["normalizedScore"] > current["normalizedScore"]
-        ):
-            best_by_category[candidate["category"]] = candidate
+    selected_products = select_avatar_look_products(scored_products)
 
     return {
         "arSessionId": request.arSessionId,
         "styleIdentityTitle": get_style_identity_title(),
         "products": [
             {"productId": item["productId"]}
-            for item in best_by_category.values()
+            for item in selected_products
         ],
     }
