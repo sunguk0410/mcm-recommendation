@@ -1,4 +1,5 @@
-from typing import List
+from threading import RLock
+from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -51,10 +52,18 @@ class ZoneInteractionRequest(BaseModel):
     dwellSeconds: float
 
 
+class PreferenceInitializeRequest(BaseModel):
+    arSessionId: int
+    zoneInteractions: List[ZoneInteractionRequest] = Field(default_factory=list)
+
+
+class PreferenceInitializeResponse(BaseModel):
+    arSessionId: int
+    initialized: bool
+
+
 class RecommendationRequest(BaseModel):
-    zoneInteractions: List[ZoneInteractionRequest] = Field(
-        default_factory=list
-    )
+    arSessionId: int
 
     interactions: List[InteractionRequest] = Field(
         default_factory=list
@@ -77,10 +86,66 @@ class RecommendationResponse(BaseModel):
     recommendations: List[RecommendationItem]
 
 
+ZONE_ALIASES = {
+    "NEW_COLLECTION": "NEW",
+}
+
+
+# Process-local MVP storage. Preferences are reset whenever the server restarts.
+preferences: Dict[int, Dict[str, Dict[str, float]]] = {}
+preferences_lock = RLock()
+
+
+def store_preferences(ar_session_id, zone_interactions):
+    dwell_by_category = {}
+    for interaction in zone_interactions:
+        category = interaction.category.strip().upper()
+        zone = interaction.zone.strip().upper()
+        zone = ZONE_ALIASES.get(zone, zone)
+        dwell_seconds = max(0.0, interaction.dwellSeconds)
+        category_dwell = dwell_by_category.setdefault(category, {})
+        category_dwell[zone] = category_dwell.get(zone, 0.0) + dwell_seconds
+
+    category_preferences = {}
+    for category, zone_dwell in dwell_by_category.items():
+        total_dwell = sum(zone_dwell.values())
+        category_preferences[category] = {
+            zone: dwell / total_dwell if total_dwell > 0 else 0.0
+            for zone, dwell in zone_dwell.items()
+        }
+
+    with preferences_lock:
+        preferences[ar_session_id] = category_preferences
+
+
+def get_zone_scores(ar_session_id, category):
+    with preferences_lock:
+        scores = preferences.get(ar_session_id, {}).get(category)
+        return dict(scores) if scores is not None else None
+
+
 @app.get("/health")
 def health():
     return {
         "status": "ok"
+    }
+
+
+@app.post(
+    "/preferences/initialize",
+    response_model=PreferenceInitializeResponse,
+)
+def initialize_preferences(request: PreferenceInitializeRequest):
+    if not request.zoneInteractions:
+        raise HTTPException(
+            status_code=400,
+            detail="zoneInteractions cannot be empty",
+        )
+
+    store_preferences(request.arSessionId, request.zoneInteractions)
+    return {
+        "arSessionId": request.arSessionId,
+        "initialized": True,
     }
 
 
@@ -91,10 +156,13 @@ def health():
 def recommend(
     request: RecommendationRequest,
 ):
-    if not request.interactions and not request.zoneInteractions:
+    category = request.category.strip().upper()
+    zone_scores = get_zone_scores(request.arSessionId, category)
+
+    if not request.interactions and zone_scores is None:
         raise HTTPException(
             status_code=400,
-            detail="interactions and zoneInteractions cannot both be empty",
+            detail="No initialized preference for arSessionId and category",
         )
 
     interactions = [
@@ -102,16 +170,11 @@ def recommend(
         for interaction in request.interactions
     ]
 
-    zone_interactions = [
-        interaction.model_dump()
-        for interaction in request.zoneInteractions
-    ]
-
     try:
         recommendations = recommender.recommend(
             interactions=interactions,
-            zone_interactions=zone_interactions,
-            category=request.category,
+            zone_scores=zone_scores,
+            category=category,
             top_k=request.topK,
             exclude_seen=True,
         )

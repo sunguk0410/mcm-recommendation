@@ -14,11 +14,6 @@ CATALOG_PATH = "MCM_제품리스트_통합_추천모델용.xlsx"
 
 MAX_SEQ_LEN = 64
 
-ZONE_ALIASES = {
-    "NEW_COLLECTION": "NEW",
-}
-
-
 class RecRecInference:
 
     def __init__(self):
@@ -339,12 +334,12 @@ class RecRecInference:
     def recommend(
         self,
         interactions,
-        zone_interactions=None,
+        zone_scores=None,
         top_k=6,
         category=None,
         exclude_seen=True,
     ):
-        zone_interactions = zone_interactions or []
+        zone_scores = zone_scores or {}
         category = category.strip().upper() if category else None
 
         candidates = [
@@ -364,31 +359,6 @@ class RecRecInference:
         ]
         if not candidates:
             return []
-
-        zone_dwell_seconds = {}
-        for interaction in zone_interactions:
-            interaction_category = str(
-                interaction["category"]
-            ).strip().upper()
-            if interaction_category != category:
-                continue
-
-            zone = str(interaction["zone"]).strip().upper()
-            zone = ZONE_ALIASES.get(zone, zone)
-            dwell_seconds = max(
-                0.0,
-                float(interaction["dwellSeconds"]),
-            )
-            zone_dwell_seconds[zone] = (
-                zone_dwell_seconds.get(zone, 0.0)
-                + dwell_seconds
-            )
-
-        total_dwell_seconds = sum(zone_dwell_seconds.values())
-        zone_scores = {
-            zone: dwell_seconds / total_dwell_seconds
-            for zone, dwell_seconds in zone_dwell_seconds.items()
-        } if total_dwell_seconds > 0 else {}
 
         # Initial recommendations do not invoke RecRec.
         if not interactions:
