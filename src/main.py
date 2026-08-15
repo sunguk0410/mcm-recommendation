@@ -1,5 +1,6 @@
+import logging
 from threading import RLock
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -7,6 +8,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .avatar_look import select_avatar_look_products
+from .contrastive_refresh import (
+    has_new_interactions,
+    select_contrastive_products,
+)
 from .inference import RecRecInference
 
 
@@ -14,6 +19,7 @@ app = FastAPI(
     title="MCM Recommendation API",
     version="1.0.0",
 )
+logger = logging.getLogger(__name__)
 
 
 # 422 Validation Error 디버깅용
@@ -87,6 +93,10 @@ class RecommendationResponse(BaseModel):
     recommendations: List[RecommendationItem]
 
 
+class RefreshRecommendationRequest(BaseModel):
+    interactions: Optional[List[InteractionRequest]] = None
+
+
 class AvatarLookRequest(BaseModel):
     arSessionId: int
 
@@ -113,6 +123,11 @@ preferences_lock = RLock()
 # these process-local values are reset whenever the server restarts.
 session_interactions: Dict[int, List[dict]] = {}
 session_interactions_lock = RLock()
+
+# Latest result and interaction snapshot per session/category. Process-local,
+# matching the lifetime of the existing preference and interaction stores.
+recent_category_recommendations: Dict[tuple, Dict[str, List[dict]]] = {}
+recent_category_recommendations_lock = RLock()
 
 
 def store_preferences(ar_session_id, zone_interactions):
@@ -154,6 +169,30 @@ def get_session_interactions(ar_session_id):
             dict(item)
             for item in session_interactions.get(ar_session_id, [])
         ]
+
+
+def store_recent_category_recommendations(
+    ar_session_id,
+    category,
+    recommendations,
+    interactions,
+):
+    with recent_category_recommendations_lock:
+        recent_category_recommendations[(ar_session_id, category)] = {
+            "recommendations": [dict(item) for item in recommendations],
+            "interactions": [dict(item) for item in interactions],
+        }
+
+
+def get_recent_category_recommendations(ar_session_id, category):
+    with recent_category_recommendations_lock:
+        recent = recent_category_recommendations.get((ar_session_id, category))
+        if recent is None:
+            return None
+        return {
+            "recommendations": [dict(item) for item in recent["recommendations"]],
+            "interactions": [dict(item) for item in recent["interactions"]],
+        }
 
 
 def get_style_identity_title():
@@ -216,10 +255,92 @@ def recommend(
         ) from error
 
     store_session_interactions(request.arSessionId, interactions)
+    store_recent_category_recommendations(
+        request.arSessionId,
+        category,
+        recommendations,
+        interactions,
+    )
 
     return {
         "recommendations": recommendations
     }
+
+
+@app.post(
+    "/api/recommendations/ar-sessions/{arSessionId}/categories/{categoryCode}/refresh",
+    response_model=RecommendationResponse,
+)
+def refresh_recommendations(
+    arSessionId: int,
+    categoryCode: str,
+    request: Optional[RefreshRecommendationRequest] = None,
+):
+    category = categoryCode.strip().upper()
+    if request is not None and request.interactions is not None:
+        interactions = [item.model_dump() for item in request.interactions]
+    else:
+        interactions = get_session_interactions(arSessionId)
+
+    recent = get_recent_category_recommendations(arSessionId, category)
+    interaction_added = (
+        recent is None
+        or has_new_interactions(interactions, recent["interactions"])
+    )
+
+    try:
+        if interaction_added:
+            recommendations = recommender.recommend(
+                interactions=interactions,
+                zone_scores=get_zone_scores(arSessionId, category),
+                category=category,
+                top_k=6,
+                exclude_seen=True,
+            )
+        else:
+            category_product_count = sum(
+                product.category == category
+                for product in recommender.products
+            )
+            scored_products = recommender.recommend(
+                interactions=interactions,
+                zone_scores=get_zone_scores(arSessionId, category),
+                category=category,
+                top_k=category_product_count,
+                exclude_seen=True,
+            )
+            previous_ids = {
+                item["productId"]
+                for item in recent["recommendations"]
+            }
+            candidate_count = sum(
+                item["productId"] not in previous_ids
+                for item in scored_products
+            )
+            recommendations = select_contrastive_products(
+                scored_products,
+                previous_ids,
+            )
+            logger.info(
+                "Contrastive refresh applied. arSessionId=%s, categoryCode=%s, "
+                "previousCount=%s, candidateCount=%s, resultCount=%s",
+                arSessionId,
+                category,
+                len(previous_ids),
+                candidate_count,
+                len(recommendations),
+            )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    store_session_interactions(arSessionId, interactions)
+    store_recent_category_recommendations(
+        arSessionId,
+        category,
+        recommendations,
+        interactions,
+    )
+    return {"recommendations": recommendations}
 
 
 @app.post(
