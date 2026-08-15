@@ -1,0 +1,8 @@
+services:
+  recommendation:
+    image: 210039344853.dkr.ecr.ap-northeast-2.amazonaws.com/mcm-recommendation
+
+    ports:
+      - "8000:8000"
+
+    restart: unless-stopped

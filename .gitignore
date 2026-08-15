@@ -1,0 +1,30 @@
+# Python environments
+.venv/
+venv/
+
+# Python caches and bytecode
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Local environment and sensitive keys
+.env
+.env.*
+*.pem
+*.key
+
+# IDE settings
+.idea/
+.vscode/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Generated interaction datasets
+synthetic_interactions*.jsonl
