@@ -2,3 +2,6 @@ fastapi
 uvicorn
 pandas
 openpyxl
+rembg
+Pillow
+onnxruntime

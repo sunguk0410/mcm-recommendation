@@ -1,13 +1,23 @@
 import logging
+from pathlib import Path
 from threading import RLock
 from typing import Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .avatar_look import select_avatar_look_products
+from .background_removal import (
+    BackgroundRemovalError,
+    ImageDownloadError,
+    ImageSaveError,
+    ImageTooLargeError,
+    UnsupportedImageError,
+    remove_background,
+)
 from .contrastive_refresh import (
     has_new_interactions,
     select_contrastive_products,
@@ -21,6 +31,12 @@ app = FastAPI(
     version="1.0.0",
 )
 logger = logging.getLogger(__name__)
+generated_image_directory = Path("generated").resolve()
+app.mount(
+    "/images/generated",
+    StaticFiles(directory=generated_image_directory, check_dir=False),
+    name="generated-images",
+)
 
 
 # 422 Validation Error 디버깅용
@@ -116,6 +132,14 @@ class AvatarLookResponse(BaseModel):
     arSessionId: int
     styleIdentityTitle: str
     products: List[AvatarLookProduct]
+
+
+class RemoveBackgroundRequest(BaseModel):
+    imageUrl: str = Field(min_length=1, pattern=r"^https?://")
+
+
+class RemoveBackgroundResponse(BaseModel):
+    imageUrl: str
 
 
 ZONE_ALIASES = {
@@ -377,6 +401,30 @@ def refresh_recommendations(
         interactions,
     )
     return {"recommendations": recommendations}
+
+
+@app.post(
+    "/images/remove-background",
+    response_model=RemoveBackgroundResponse,
+)
+def remove_image_background(request: RemoveBackgroundRequest):
+    try:
+        filename = remove_background(
+            request.imageUrl,
+            generated_image_directory,
+        )
+    except ImageTooLargeError as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+    except UnsupportedImageError as error:
+        raise HTTPException(status_code=415, detail=str(error)) from error
+    except ImageDownloadError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except BackgroundRemovalError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except ImageSaveError as error:
+        raise HTTPException(status_code=507, detail=str(error)) from error
+
+    return {"imageUrl": f"/images/generated/{filename}"}
 
 
 @app.post(
