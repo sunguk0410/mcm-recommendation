@@ -1,46 +1,113 @@
 import unittest
 
 from src.avatar_look import (
-    select_avatar_look_products,
-    select_raw_score_fallback,
+    calculate_product_active_states,
+    explicitly_removed_without_positive_state,
+    select_category_anchors,
 )
+from src.affinity import Product
 
 
-class SelectAvatarLookProductsTest(unittest.TestCase):
-    def test_normal_candidates_keep_existing_category_selection(self):
-        products = [
-            {"productId": 1, "score": 10.0, "category": "BAG"},
-            {"productId": 2, "score": 9.0, "category": "BAG"},
-            {"productId": 3, "score": 8.0, "category": "TOP"},
-            {"productId": 4, "score": 0.0, "category": "SHOES"},
+class AvatarActiveStateTest(unittest.TestCase):
+    def state_for(self, *actions):
+        interactions = [
+            {"productId": 46, "interactionType": action}
+            for action in actions
         ]
+        return calculate_product_active_states(interactions)[46]
 
-        selected = select_avatar_look_products(products)
+    def test_fitting_state_transitions(self):
+        self.assertTrue(self.state_for("FITTING_ADD")["fittingActive"])
+        self.assertFalse(
+            self.state_for("FITTING_ADD", "FITTING_REMOVE")["fittingActive"]
+        )
+        self.assertTrue(
+            self.state_for(
+                "FITTING_ADD", "FITTING_REMOVE", "FITTING_ADD"
+            )["fittingActive"]
+        )
 
-        self.assertEqual([1, 3], [item["productId"] for item in selected])
+    def test_wishlist_state_transitions(self):
+        self.assertTrue(self.state_for("WISHLIST_ADD")["wishlistActive"])
+        self.assertFalse(
+            self.state_for("WISHLIST_ADD", "WISHLIST_REMOVE")["wishlistActive"]
+        )
+        self.assertTrue(
+            self.state_for(
+                "WISHLIST_ADD", "WISHLIST_REMOVE", "WISHLIST_ADD"
+            )["wishlistActive"]
+        )
 
-    def test_interaction_shortage_fallback_uses_raw_top_three_categories(self):
-        products = [
-            {"productId": 1, "score": 5.31, "category": "BAG"},
-            {"productId": 2, "score": 5.02, "category": "TOP"},
-            {"productId": 3, "score": 4.87, "category": "SHOES"},
-            {"productId": 4, "score": 4.20, "category": "BOTTOM"},
-        ]
+    def test_remove_does_not_clear_independent_positive_state(self):
+        state = self.state_for(
+            "PRODUCT_SELECT",
+            "FITTING_ADD",
+            "WISHLIST_ADD",
+            "WISHLIST_REMOVE",
+        )
+        self.assertFalse(state["wishlistActive"])
+        self.assertTrue(state["fittingActive"])
+        self.assertTrue(state["productSelected"])
 
-        selected = select_raw_score_fallback(products)
+    def test_fully_removed_non_selected_product_is_excluded_from_complement(self):
+        states = calculate_product_active_states([
+            {"productId": 46, "interactionType": "WISHLIST_ADD"},
+            {"productId": 46, "interactionType": "WISHLIST_REMOVE"},
+        ])
+        self.assertEqual({46}, explicitly_removed_without_positive_state(states))
 
-        self.assertEqual([1, 2, 3], [item["productId"] for item in selected])
 
-    def test_equal_scores_use_fallback_without_duplicate_categories(self):
-        products = [
-            {"productId": 11, "score": 0.0, "category": "BAG"},
-            {"productId": 12, "score": 0.0, "category": "BAG"},
-            {"productId": 13, "score": 0.0, "category": "TOP"},
-        ]
+class AvatarAnchorSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.products = {
+            product_id: Product(
+                product_id,
+                f"P{product_id}",
+                f"Product {product_id}",
+                "UNISEX",
+                "BAG",
+                None,
+                "NEW",
+                None,
+                None,
+            )
+            for product_id in (46, 53, 54)
+        }
 
-        selected = select_avatar_look_products(products)
+    def select(self, interactions, scores):
+        states = calculate_product_active_states(interactions)
+        return select_category_anchors(states, self.products, scores)["BAG"]
 
-        self.assertEqual([11, 13], [item["productId"] for item in selected])
+    def test_priority_is_wishlist_then_fitting_then_select(self):
+        selected = self.select(
+            [
+                {"productId": 46, "interactionType": "WISHLIST_ADD"},
+                {"productId": 53, "interactionType": "FITTING_ADD"},
+                {"productId": 54, "interactionType": "PRODUCT_SELECT"},
+            ],
+            {46: 1.0, 53: 100.0, 54: 200.0},
+        )
+        self.assertEqual(46, selected["productId"])
+
+    def test_equal_priority_uses_recrec_score_before_recency(self):
+        selected = self.select(
+            [
+                {"productId": 46, "interactionType": "FITTING_ADD"},
+                {"productId": 53, "interactionType": "FITTING_ADD"},
+            ],
+            {46: 5.0, 53: 4.0},
+        )
+        self.assertEqual(46, selected["productId"])
+
+    def test_equal_priority_and_score_uses_recent_positive_interaction(self):
+        selected = self.select(
+            [
+                {"productId": 46, "interactionType": "FITTING_ADD"},
+                {"productId": 53, "interactionType": "FITTING_ADD"},
+            ],
+            {46: 5.0, 53: 5.0},
+        )
+        self.assertEqual(53, selected["productId"])
 
 
 if __name__ == "__main__":

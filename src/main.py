@@ -9,7 +9,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .avatar_look import select_avatar_look_products
+from .avatar_look import (
+    calculate_product_active_states,
+    explicitly_removed_without_positive_state,
+    select_category_anchors,
+    select_category_complement,
+)
 from .background_removal import (
     BackgroundRemovalError,
     ImageDownloadError,
@@ -134,6 +139,25 @@ class AvatarLookResponse(BaseModel):
     products: List[AvatarLookProduct]
 
 
+class CategoryRankingValidationRequest(BaseModel):
+    arSessionId: int
+    productIds: List[int] = Field(min_length=1)
+
+
+class CategoryRankingItem(BaseModel):
+    productId: int
+    name: str
+    category: str
+    categoryRank: int
+    categorySize: int
+    score: float
+
+
+class CategoryRankingValidationResponse(BaseModel):
+    arSessionId: int
+    anchorRankings: List[CategoryRankingItem]
+
+
 class RemoveBackgroundRequest(BaseModel):
     imageUrl: str = Field(min_length=1, pattern=r"^https?://")
 
@@ -250,6 +274,24 @@ def get_recent_category_recommendations(ar_session_id, category):
 
 def get_style_identity_title():
     return "Your Signature Look"
+
+
+def score_category_products(ar_session_id, interactions, category, exclude_seen):
+    category_product_count = sum(
+        product.category == category
+        for product in recommender.products
+    )
+    recommendations = recommender.recommend(
+        interactions=interactions,
+        zone_scores=get_zone_scores(ar_session_id, category),
+        category=category,
+        top_k=category_product_count,
+        exclude_seen=exclude_seen,
+    )
+    return sorted(
+        recommendations,
+        key=lambda item: (-item["score"], item["productId"]),
+    )
 
 
 @app.get("/health")
@@ -428,6 +470,75 @@ def remove_image_background(request: RemoveBackgroundRequest):
 
 
 @app.post(
+    "/recommendations/validation",
+    response_model=CategoryRankingValidationResponse,
+)
+def validate_category_rankings(request: CategoryRankingValidationRequest):
+    requested_product_ids = list(dict.fromkeys(request.productIds))
+    unknown_product_ids = [
+        product_id
+        for product_id in requested_product_ids
+        if product_id not in recommender.product_by_id
+    ]
+    if unknown_product_ids:
+        raise HTTPException(
+            status_code=404,
+            detail={"unknownProductIds": unknown_product_ids},
+        )
+
+    interactions = get_session_interactions(request.arSessionId)
+    products = [
+        recommender.product_by_id[product_id]
+        for product_id in requested_product_ids
+    ]
+    categories = list(dict.fromkeys(product.category for product in products))
+
+    rankings_by_product_id = {}
+    try:
+        for category in categories:
+            recommendations = score_category_products(
+                request.arSessionId,
+                interactions,
+                category,
+                exclude_seen=False,
+            )
+            category_size = sum(
+                product.category == category
+                for product in recommender.products
+            )
+            rankings_by_product_id.update({
+                item["productId"]: {
+                    "categoryRank": rank,
+                    "categorySize": category_size,
+                    "score": item["score"],
+                }
+                for rank, item in enumerate(recommendations, start=1)
+            })
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    anchor_rankings = []
+    for product in products:
+        ranking = rankings_by_product_id.get(product.product_id)
+        if ranking is None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Product {product.product_id} was not scored in {product.category}",
+            )
+        anchor_rankings.append({
+            "productId": product.product_id,
+            "name": product.name,
+            "category": product.category,
+            **ranking,
+        })
+
+    return {
+        "arSessionId": request.arSessionId,
+        "anchorRankings": anchor_rankings,
+    }
+
+
+@app.post(
     "/recommendations/avatar-look",
     response_model=AvatarLookResponse,
 )
@@ -438,17 +549,13 @@ def recommend_avatar_look(request: AvatarLookRequest):
         and interaction["interactionType"] in BEHAVIOR_TO_ID
         for interaction in interactions
     )
-    unique_product_ids = {
-        int(interaction["productId"])
-        for interaction in interactions
-    }
     logger.info(
         "Avatar Look request. arSessionId=%s, storedInteractionCount=%s, "
         "validInteractionCount=%s, uniqueProductIdCount=%s, catalogProductCount=%s",
         request.arSessionId,
         len(interactions),
         valid_interaction_count,
-        len(unique_product_ids),
+        len({int(interaction["productId"]) for interaction in interactions}),
         len(recommender.products),
     )
 
@@ -459,53 +566,62 @@ def recommend_avatar_look(request: AvatarLookRequest):
             for product in recommender.products
         ))
 
-        scored_products = []
+        recommendations_by_category = {}
+        scores_by_product_id = {}
         for category in categories:
             current_category = category
-            category_product_count = sum(
-                product.category == category
-                for product in recommender.products
+            recommendations = score_category_products(
+                request.arSessionId,
+                interactions,
+                category,
+                exclude_seen=False,
             )
-            remaining_candidate_count = sum(
-                product.category == category
-                and product.product_id not in unique_product_ids
-                for product in recommender.products
-            )
-            recommendations = recommender.recommend(
-                interactions=interactions,
-                zone_scores=get_zone_scores(request.arSessionId, category),
-                category=category,
-                top_k=category_product_count,
-                exclude_seen=True,
-            )
+            recommendations_by_category[category] = recommendations
+            scores_by_product_id.update({
+                item["productId"]: item["score"]
+                for item in recommendations
+            })
             logger.info(
                 "Avatar Look category. arSessionId=%s, category=%s, "
-                "totalCandidateCount=%s, candidatesBeforeExcludeSeen=%s, "
-                "candidatesAfterExcludeSeen=%s, recommendResultCount=%s",
+                "excludeSeen=false, scoredProductCount=%s",
                 request.arSessionId,
                 category,
-                category_product_count,
-                category_product_count,
-                remaining_candidate_count,
                 len(recommendations),
-            )
-            scored_products.extend(
-                {
-                    **item,
-                    "category": category,
-                }
-                for item in recommendations
             )
 
         current_category = None
-        logger.info(
-            "Avatar Look scoring complete. arSessionId=%s, scoredProductsCount=%s",
-            request.arSessionId,
-            len(scored_products),
+        product_states = calculate_product_active_states(interactions)
+        anchors_by_category = select_category_anchors(
+            product_states,
+            recommender.product_by_id,
+            scores_by_product_id,
         )
-        selected_products = select_avatar_look_products(
-            scored_products,
-            ar_session_id=request.arSessionId,
+        excluded_complements = explicitly_removed_without_positive_state(
+            product_states
+        )
+        selected_products = []
+        selected_product_ids = set()
+        for category in categories:
+            selected = anchors_by_category.get(category)
+            if selected is None:
+                selected = select_category_complement(
+                    recommendations_by_category[category],
+                    excluded_complements | selected_product_ids,
+                )
+            if selected is not None and selected["productId"] not in selected_product_ids:
+                selected_products.append(selected)
+                selected_product_ids.add(selected["productId"])
+
+        logger.info(
+            "Avatar Look selection. arSessionId=%s, anchors=%s, "
+            "excludedComplements=%s, finalProductIds=%s",
+            request.arSessionId,
+            {
+                category: item["productId"]
+                for category, item in anchors_by_category.items()
+            },
+            sorted(excluded_complements),
+            [item["productId"] for item in selected_products],
         )
     except Exception as error:
         logger.exception(

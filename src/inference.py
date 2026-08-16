@@ -10,7 +10,7 @@ from .dataset import (
 )
 
 
-CHECKPOINT_PATH = "checkpoints/recrec_v2_best.pt"
+CHECKPOINT_PATH = "checkpoints/recrec_v3_best.pt"
 CATALOG_PATH = "MCM_제품리스트_통합_추천모델용.xlsx"
 
 MAX_SEQ_LEN = 64
@@ -60,6 +60,13 @@ class RecRecInference:
         config = checkpoint[
             "model_config"
         ]
+
+        checkpoint_behavior_to_id = checkpoint.get("behavior_to_id")
+        if checkpoint_behavior_to_id != BEHAVIOR_TO_ID:
+            raise ValueError(
+                "Checkpoint behavior vocabulary does not match runtime: "
+                f"{checkpoint_behavior_to_id!r} != {BEHAVIOR_TO_ID!r}"
+            )
 
         self.model = RecRec(
             num_products=config[

@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 COPY src ./src
-COPY checkpoints/recrec_v2_best.pt ./checkpoints/recrec_v2_best.pt
+COPY checkpoints/recrec_v3_best.pt ./checkpoints/recrec_v3_best.pt
 COPY MCM_제품리스트_통합_추천모델용.xlsx .
 
 EXPOSE 8000
