@@ -1,6 +1,6 @@
 import logging
 from threading import RLock
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -59,9 +59,15 @@ class ZoneInteractionRequest(BaseModel):
     dwellSeconds: float
 
 
+class MemberInteractionRequest(BaseModel):
+    productId: int
+    action: Literal["WISHLIST"]
+
+
 class PreferenceInitializeRequest(BaseModel):
     arSessionId: int
     zoneInteractions: List[ZoneInteractionRequest] = Field(default_factory=list)
+    memberInteractions: List[MemberInteractionRequest] = Field(default_factory=list)
 
 
 class PreferenceInitializeResponse(BaseModel):
@@ -130,7 +136,7 @@ recent_category_recommendations: Dict[tuple, Dict[str, List[dict]]] = {}
 recent_category_recommendations_lock = RLock()
 
 
-def store_preferences(ar_session_id, zone_interactions):
+def store_preferences(ar_session_id, zone_interactions, member_interactions):
     dwell_by_category = {}
     for interaction in zone_interactions:
         category = interaction.category.strip().upper()
@@ -140,13 +146,35 @@ def store_preferences(ar_session_id, zone_interactions):
         category_dwell = dwell_by_category.setdefault(category, {})
         category_dwell[zone] = category_dwell.get(zone, 0.0) + dwell_seconds
 
-    category_preferences = {}
+    zone_preferences = {}
     for category, zone_dwell in dwell_by_category.items():
         total_dwell = sum(zone_dwell.values())
-        category_preferences[category] = {
+        zone_preferences[category] = {
             zone: dwell / total_dwell if total_dwell > 0 else 0.0
             for zone, dwell in zone_dwell.items()
         }
+
+    member_scores = (
+        recommender.build_wishlist_preference_scores(member_interactions)
+        if member_interactions
+        else {}
+    )
+    has_zone_preferences = bool(zone_interactions)
+    has_member_preferences = bool(member_interactions)
+    category_preferences = {}
+
+    for product in recommender.products:
+        zone_score = zone_preferences.get(product.category, {}).get(product.zone, 0.0)
+        member_score = member_scores.get(product.product_id, 0.0)
+
+        if has_zone_preferences and has_member_preferences:
+            score = 0.7 * zone_score + 0.3 * member_score
+        elif has_zone_preferences:
+            score = zone_score
+        else:
+            score = member_score
+
+        category_preferences.setdefault(product.category, {})[product.product_id] = score
 
     with preferences_lock:
         preferences[ar_session_id] = category_preferences
@@ -211,13 +239,20 @@ def health():
     response_model=PreferenceInitializeResponse,
 )
 def initialize_preferences(request: PreferenceInitializeRequest):
-    if not request.zoneInteractions:
+    if not request.zoneInteractions and not request.memberInteractions:
         raise HTTPException(
             status_code=400,
-            detail="zoneInteractions cannot be empty",
+            detail="zoneInteractions and memberInteractions cannot both be empty",
         )
 
-    store_preferences(request.arSessionId, request.zoneInteractions)
+    try:
+        store_preferences(
+            request.arSessionId,
+            request.zoneInteractions,
+            request.memberInteractions,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return {
         "arSessionId": request.arSessionId,
         "initialized": True,

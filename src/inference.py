@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import pandas as pd
 
 from .recrec import RecRec
@@ -219,6 +220,44 @@ class RecRecInference:
     # =====================================================
 
     @torch.no_grad()
+    def build_wishlist_preference_scores(self, interactions):
+        wishlist_embeddings = []
+
+        for interaction in interactions:
+            product_id = int(interaction.productId)
+            if product_id not in self.mapper.product_to_index:
+                continue
+
+            product_index = self.mapper.encode(product_id)
+            wishlist_embeddings.append(
+                self.model.product_embedding.weight[product_index]
+            )
+
+        if not wishlist_embeddings:
+            raise ValueError("No valid memberInteractions")
+
+        member_preference = torch.stack(wishlist_embeddings).mean(dim=0)
+        member_preference = F.normalize(member_preference, dim=0)
+        product_embeddings = F.normalize(
+            self.model.product_embedding.weight,
+            dim=-1,
+        )
+        similarities = product_embeddings @ member_preference
+
+        return {
+            product.product_id: float(
+                (similarities[self.mapper.encode(product.product_id)] + 1.0) / 2.0
+            )
+            for product in self.products
+        }
+
+    @staticmethod
+    def _initial_preference_score(product, preference_scores):
+        if product.product_id in preference_scores:
+            return preference_scores[product.product_id]
+        return preference_scores.get(product.zone, 0.0)
+
+    @torch.no_grad()
     def _recommend_legacy(
         self,
         interactions,
@@ -365,7 +404,7 @@ class RecRecInference:
             recommendations = [
                 {
                     "productId": product.product_id,
-                    "score": float(zone_scores.get(product.zone, 0.0)),
+                    "score": float(self._initial_preference_score(product, zone_scores)),
                 }
                 for product in candidates
             ]
@@ -405,7 +444,7 @@ class RecRecInference:
             rec_weight = 0.7 if len(interactions) <= 2 else 0.9
             candidate_zone_scores = torch.tensor(
                 [
-                    zone_scores.get(product.zone, 0.0)
+                    self._initial_preference_score(product, zone_scores)
                     for product in candidates
                 ],
                 dtype=rec_scores.dtype,
