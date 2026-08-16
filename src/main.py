@@ -12,6 +12,7 @@ from .contrastive_refresh import (
     has_new_interactions,
     select_contrastive_products,
 )
+from .dataset import BEHAVIOR_TO_ID
 from .inference import RecRecInference
 
 
@@ -384,33 +385,88 @@ def refresh_recommendations(
 )
 def recommend_avatar_look(request: AvatarLookRequest):
     interactions = get_session_interactions(request.arSessionId)
-    categories = list(dict.fromkeys(
-        product.category
-        for product in recommender.products
-    ))
+    valid_interaction_count = sum(
+        interaction["productId"] in recommender.mapper.product_to_index
+        and interaction["interactionType"] in BEHAVIOR_TO_ID
+        for interaction in interactions
+    )
+    unique_product_ids = {
+        int(interaction["productId"])
+        for interaction in interactions
+    }
+    logger.info(
+        "Avatar Look request. arSessionId=%s, storedInteractionCount=%s, "
+        "validInteractionCount=%s, uniqueProductIdCount=%s, catalogProductCount=%s",
+        request.arSessionId,
+        len(interactions),
+        valid_interaction_count,
+        len(unique_product_ids),
+        len(recommender.products),
+    )
 
-    scored_products = []
-    for category in categories:
-        category_product_count = sum(
-            product.category == category
+    current_category = None
+    try:
+        categories = list(dict.fromkeys(
+            product.category
             for product in recommender.products
-        )
-        recommendations = recommender.recommend(
-            interactions=interactions,
-            zone_scores=get_zone_scores(request.arSessionId, category),
-            category=category,
-            top_k=category_product_count,
-            exclude_seen=True,
-        )
-        scored_products.extend(
-            {
-                **item,
-                "category": category,
-            }
-            for item in recommendations
-        )
+        ))
 
-    selected_products = select_avatar_look_products(scored_products)
+        scored_products = []
+        for category in categories:
+            current_category = category
+            category_product_count = sum(
+                product.category == category
+                for product in recommender.products
+            )
+            remaining_candidate_count = sum(
+                product.category == category
+                and product.product_id not in unique_product_ids
+                for product in recommender.products
+            )
+            recommendations = recommender.recommend(
+                interactions=interactions,
+                zone_scores=get_zone_scores(request.arSessionId, category),
+                category=category,
+                top_k=category_product_count,
+                exclude_seen=True,
+            )
+            logger.info(
+                "Avatar Look category. arSessionId=%s, category=%s, "
+                "totalCandidateCount=%s, candidatesBeforeExcludeSeen=%s, "
+                "candidatesAfterExcludeSeen=%s, recommendResultCount=%s",
+                request.arSessionId,
+                category,
+                category_product_count,
+                category_product_count,
+                remaining_candidate_count,
+                len(recommendations),
+            )
+            scored_products.extend(
+                {
+                    **item,
+                    "category": category,
+                }
+                for item in recommendations
+            )
+
+        current_category = None
+        logger.info(
+            "Avatar Look scoring complete. arSessionId=%s, scoredProductsCount=%s",
+            request.arSessionId,
+            len(scored_products),
+        )
+        selected_products = select_avatar_look_products(
+            scored_products,
+            ar_session_id=request.arSessionId,
+        )
+    except Exception as error:
+        logger.exception(
+            "Avatar Look failed. arSessionId=%s, category=%s, error=%s",
+            request.arSessionId,
+            current_category,
+            error,
+        )
+        raise
 
     return {
         "arSessionId": request.arSessionId,

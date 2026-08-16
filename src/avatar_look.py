@@ -1,3 +1,8 @@
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 AVATAR_LOOK_THRESHOLD = 0.5
 AVATAR_LOOK_FALLBACK_LIMIT = 3
 
@@ -20,8 +25,14 @@ def normalize_avatar_scores(recommendations):
     ]
 
 
-def select_avatar_look_products(scored_products):
+def select_avatar_look_products(scored_products, ar_session_id=None):
     if not scored_products:
+        logger.info(
+            "Avatar Look selection. arSessionId=%s, scoredProductsCount=0, "
+            "thresholdPassCount=0, rawScoreFallbackApplied=false, "
+            "finalProductsCount=0, productIds=[]",
+            ar_session_id,
+        )
         return []
 
     scores = [item["score"] for item in scored_products]
@@ -44,9 +55,31 @@ def select_avatar_look_products(scored_products):
                 best_by_category[candidate["category"]] = candidate
 
         if best_by_category:
-            return list(best_by_category.values())
+            selected = list(best_by_category.values())
+            logger.info(
+                "Avatar Look selection. arSessionId=%s, scoredProductsCount=%s, "
+                "thresholdPassCount=%s, rawScoreFallbackApplied=false, "
+                "finalProductsCount=%s, productIds=%s",
+                ar_session_id,
+                len(scored_products),
+                len(candidates),
+                len(selected),
+                [item["productId"] for item in selected],
+            )
+            return selected
 
-    return select_raw_score_fallback(scored_products)
+    selected = select_raw_score_fallback(scored_products)
+    logger.info(
+        "Avatar Look selection. arSessionId=%s, scoredProductsCount=%s, "
+        "thresholdPassCount=%s, rawScoreFallbackApplied=true, "
+        "finalProductsCount=%s, productIds=%s",
+        ar_session_id,
+        len(scored_products),
+        0 if all_scores_equal else len(candidates),
+        len(selected),
+        [item["productId"] for item in selected],
+    )
+    return selected
 
 
 def select_raw_score_fallback(scored_products):
