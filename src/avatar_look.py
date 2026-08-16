@@ -1,99 +1,99 @@
-ANCHOR_PRIORITY = {
-    "PRODUCT_SELECT": 1,
-    "FITTING_ADD": 2,
-    "WISHLIST_ADD": 3,
-}
+import logging
 
 
-def calculate_product_active_states(interactions):
-    states = {}
-    for sequence_index, interaction in enumerate(interactions):
-        product_id = int(interaction["productId"])
-        interaction_type = interaction["interactionType"]
-        state = states.setdefault(
-            product_id,
-            {
-                "productId": product_id,
-                "productSelected": False,
-                "fittingActive": False,
-                "wishlistActive": False,
-                "lastProductSelectIndex": -1,
-                "lastFittingAddIndex": -1,
-                "lastWishlistAddIndex": -1,
-                "hasExplicitRemove": False,
-            },
+logger = logging.getLogger(__name__)
+
+AVATAR_LOOK_THRESHOLD = 0.5
+AVATAR_LOOK_FALLBACK_LIMIT = 3
+
+
+def normalize_avatar_scores(recommendations):
+    if not recommendations:
+        return []
+
+    scores = [item["score"] for item in recommendations]
+    minimum = min(scores)
+    maximum = max(scores)
+    score_range = maximum - minimum
+
+    return [
+        {
+            **item,
+            "normalizedScore": (item["score"] - minimum) / score_range,
+        }
+        for item in recommendations
+    ]
+
+
+def select_avatar_look_products(scored_products, ar_session_id=None):
+    if not scored_products:
+        logger.info(
+            "Avatar Look selection. arSessionId=%s, scoredProductsCount=0, "
+            "thresholdPassCount=0, rawScoreFallbackApplied=false, "
+            "finalProductsCount=0, productIds=[]",
+            ar_session_id,
         )
+        return []
 
-        if interaction_type == "PRODUCT_SELECT":
-            state["productSelected"] = True
-            state["lastProductSelectIndex"] = sequence_index
-        elif interaction_type == "FITTING_ADD":
-            state["fittingActive"] = True
-            state["lastFittingAddIndex"] = sequence_index
-        elif interaction_type == "FITTING_REMOVE":
-            state["fittingActive"] = False
-            state["hasExplicitRemove"] = True
-        elif interaction_type == "WISHLIST_ADD":
-            state["wishlistActive"] = True
-            state["lastWishlistAddIndex"] = sequence_index
-        elif interaction_type == "WISHLIST_REMOVE":
-            state["wishlistActive"] = False
-            state["hasExplicitRemove"] = True
+    scores = [item["score"] for item in scored_products]
+    all_scores_equal = max(scores) == min(scores)
 
-    return states
+    if not all_scores_equal:
+        candidates = [
+            item
+            for item in normalize_avatar_scores(scored_products)
+            if item["normalizedScore"] >= AVATAR_LOOK_THRESHOLD
+        ]
 
+        best_by_category = {}
+        for candidate in candidates:
+            current = best_by_category.get(candidate["category"])
+            if (
+                current is None
+                or candidate["normalizedScore"] > current["normalizedScore"]
+            ):
+                best_by_category[candidate["category"]] = candidate
 
-def get_anchor_priority_and_recency(state):
-    if state["wishlistActive"]:
-        return ANCHOR_PRIORITY["WISHLIST_ADD"], state["lastWishlistAddIndex"]
-    if state["fittingActive"]:
-        return ANCHOR_PRIORITY["FITTING_ADD"], state["lastFittingAddIndex"]
-    if state["productSelected"]:
-        return ANCHOR_PRIORITY["PRODUCT_SELECT"], state["lastProductSelectIndex"]
-    return 0, -1
+        if best_by_category:
+            selected = list(best_by_category.values())
+            logger.info(
+                "Avatar Look selection. arSessionId=%s, scoredProductsCount=%s, "
+                "thresholdPassCount=%s, rawScoreFallbackApplied=false, "
+                "finalProductsCount=%s, productIds=%s",
+                ar_session_id,
+                len(scored_products),
+                len(candidates),
+                len(selected),
+                [item["productId"] for item in selected],
+            )
+            return selected
 
-
-def select_category_anchors(product_states, product_by_id, scores_by_product_id):
-    anchors = {}
-    anchor_keys = {}
-    for product_id, state in product_states.items():
-        product = product_by_id.get(product_id)
-        if product is None:
-            continue
-
-        priority, recency = get_anchor_priority_and_recency(state)
-        if priority == 0:
-            continue
-
-        score = scores_by_product_id.get(product_id, float("-inf"))
-        key = (priority, score, recency, -product_id)
-        if key > anchor_keys.get(product.category, (-1, float("-inf"), -1, 0)):
-            anchors[product.category] = {
-                "productId": product_id,
-                "category": product.category,
-                "score": score,
-                "anchorPriority": priority,
-            }
-            anchor_keys[product.category] = key
-
-    return anchors
-
-
-def explicitly_removed_without_positive_state(product_states):
-    return {
-        product_id
-        for product_id, state in product_states.items()
-        if state["hasExplicitRemove"]
-        and get_anchor_priority_and_recency(state)[0] == 0
-    }
-
-
-def select_category_complement(recommendations, excluded_product_ids):
-    return next(
-        (
-            recommendation
-            for recommendation in recommendations
-            if recommendation["productId"] not in excluded_product_ids
-        ),
-        None,
+    selected = select_raw_score_fallback(scored_products)
+    logger.info(
+        "Avatar Look selection. arSessionId=%s, scoredProductsCount=%s, "
+        "thresholdPassCount=%s, rawScoreFallbackApplied=true, "
+        "finalProductsCount=%s, productIds=%s",
+        ar_session_id,
+        len(scored_products),
+        0 if all_scores_equal else len(candidates),
+        len(selected),
+        [item["productId"] for item in selected],
     )
+    return selected
+
+
+def select_raw_score_fallback(scored_products):
+    selected = []
+    used_categories = set()
+    for item in sorted(
+        scored_products,
+        key=lambda product: (-product["score"], product["productId"]),
+    ):
+        if item["category"] in used_categories:
+            continue
+        selected.append(item)
+        used_categories.add(item["category"])
+        if len(selected) == AVATAR_LOOK_FALLBACK_LIMIT:
+            break
+
+    return selected

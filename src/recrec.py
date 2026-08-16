@@ -94,10 +94,9 @@ class RecRec(nn.Module):
     behavior:
         0 = PAD
         1 = PRODUCT_SELECT
-        2 = FITTING_ADD
-        3 = FITTING_REMOVE
-        4 = WISHLIST_ADD
-        5 = WISHLIST_REMOVE
+        2 = FITTING
+        3 = WISHLIST_ADD
+        4 = WISHLIST_REMOVE
     """
 
     def __init__(
@@ -105,7 +104,7 @@ class RecRec(nn.Module):
         num_products: int,
         embedding_dim: int = 128,
         hidden_dim: int = 256,
-        num_behavior_types: int = 6,
+        num_behavior_types: int = 5,
 
         # 논문의 outer refinement T
         num_refinement_steps: int = 6,
@@ -168,8 +167,8 @@ class RecRec(nn.Module):
         #
         # MCM-specific extension
         #
-        # SELECT / FITTING_ADD / FITTING_REMOVE /
-        # WISHLIST_ADD / WISHLIST_REMOVE
+        # SELECT / FITTING /
+        # WISHLIST_ADD / REMOVE
         # =====================================================
 
         self.behavior_embedding = (

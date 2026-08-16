@@ -18,8 +18,7 @@ from .affinity import (
 # =========================================================
 
 PRODUCT_SELECT = "PRODUCT_SELECT"
-FITTING_ADD = "FITTING_ADD"
-FITTING_REMOVE = "FITTING_REMOVE"
+FITTING = "FITTING"
 WISHLIST_ADD = "WISHLIST_ADD"
 WISHLIST_REMOVE = "WISHLIST_REMOVE"
 
@@ -31,13 +30,11 @@ BEHAVIOR_TO_ID = {
 
     PRODUCT_SELECT: 1,
 
-    FITTING_ADD: 2,
+    FITTING: 2,
 
-    FITTING_REMOVE: 3,
+    WISHLIST_ADD: 3,
 
-    WISHLIST_ADD: 4,
-
-    WISHLIST_REMOVE: 5,
+    WISHLIST_REMOVE: 4,
 }
 
 
@@ -263,12 +260,12 @@ def build_product_episodes(
 #
 # Episode 1
 # P12 SELECT
-# P12 FITTING_ADD
+# P12 FITTING
 # P12 WISHLIST_ADD
 #
 # Episode 2
 # P31 SELECT
-# P31 FITTING_ADD
+# P31 FITTING
 #
 # Episode 3
 # P08 SELECT
@@ -537,10 +534,9 @@ class RecRecDataset(Dataset):
             #
             # use_behavior=True
             #   PRODUCT_SELECT  -> 1
-            #   FITTING_ADD     -> 2
-            #   FITTING_REMOVE  -> 3
-            #   WISHLIST_ADD    -> 4
-            #   WISHLIST_REMOVE -> 5
+            #   FITTING         -> 2
+            #   WISHLIST_ADD    -> 3
+            #   WISHLIST_REMOVE -> 4
             #
             # use_behavior=False
             #   모든 실제 행동 -> 1
@@ -705,7 +701,7 @@ def create_datasets(
 if __name__ == "__main__":
 
     JSONL_PATH = (
-        "synthetic_interactions_v3.jsonl"
+        "synthetic_interactions_v2.jsonl"
     )
 
     CATALOG_PATH = (
