@@ -23,6 +23,7 @@ from .contrastive_refresh import (
     select_contrastive_products,
 )
 from .dataset import BEHAVIOR_TO_ID
+from .evaluation import evaluate_personas
 from .inference import RecRecInference
 
 
@@ -79,6 +80,48 @@ class ZoneInteractionRequest(BaseModel):
 class MemberInteractionRequest(BaseModel):
     productId: int
     action: Literal["WISHLIST"]
+
+
+class EvaluationZoneInteractionRequest(ZoneInteractionRequest):
+    sequenceNo: int = Field(gt=0)
+
+
+class EvaluationInteractionRequest(InteractionRequest):
+    interactionType: Literal[
+        "PRODUCT_SELECT",
+        "FITTING",
+        "WISHLIST_ADD",
+        "WISHLIST_REMOVE",
+    ]
+    sequenceNo: int = Field(gt=0)
+
+
+class EvaluationMemberWishlistRequest(BaseModel):
+    productId: int
+
+
+class EvaluationExpectedRecommendationRequest(BaseModel):
+    productId: int
+    relevance: int = Field(ge=1, le=5)
+
+
+class EvaluationGroundTruthRequest(BaseModel):
+    anchorProductId: int
+    category: str = Field(min_length=1)
+    recommendations: List[EvaluationExpectedRecommendationRequest] = Field(min_length=1)
+
+
+class EvaluationPersonaRequest(BaseModel):
+    personaId: str = Field(min_length=1)
+    personaType: Literal["CONFIDENT", "EXPLORATORY"]
+    zoneInteractions: List[EvaluationZoneInteractionRequest] = Field(default_factory=list)
+    arInteractions: List[EvaluationInteractionRequest] = Field(min_length=1)
+    memberWishlists: List[EvaluationMemberWishlistRequest] = Field(default_factory=list)
+    groundTruth: EvaluationGroundTruthRequest
+
+
+class RecommendationEvaluationRequest(BaseModel):
+    personas: List[EvaluationPersonaRequest] = Field(min_length=1)
 
 
 class PreferenceInitializeRequest(BaseModel):
@@ -522,3 +565,15 @@ def recommend_avatar_look(request: AvatarLookRequest):
             for item in selected_products
         ],
     }
+
+
+@app.post("/evaluations/recommendations")
+def evaluate_recommendations(request: RecommendationEvaluationRequest):
+    persona_ids = [persona.personaId for persona in request.personas]
+    if len(persona_ids) != len(set(persona_ids)):
+        raise HTTPException(status_code=400, detail="personaId must be unique")
+
+    try:
+        return evaluate_personas(request.personas, recommender)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
