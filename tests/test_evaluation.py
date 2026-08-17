@@ -33,7 +33,13 @@ class FixedRecommender:
             # A higher score in another category leads the overall ranking.
             91: 1.50,
         }
-        products = self.products
+        seen_product_ids = {
+            interaction["productId"] for interaction in interactions
+        } if exclude_seen else set()
+        products = [
+            product for product in self.products
+            if product.product_id not in seen_product_ids
+        ]
         return [
             {"productId": item.product_id, "score": scores[item.product_id]}
             for item in sorted(products, key=lambda item: -scores[item.product_id])[:top_k]
@@ -41,7 +47,7 @@ class FixedRecommender:
 
 
 class RecommendationEvaluationTest(unittest.TestCase):
-    def test_anchor_and_metrics_use_overall_rank(self):
+    def test_next_item_metrics_use_overall_rank_and_exclude_seen(self):
         recommender = FixedRecommender()
         persona = SimpleNamespace(
             personaId="P1",
@@ -60,7 +66,6 @@ class RecommendationEvaluationTest(unittest.TestCase):
             ],
             memberWishlists=[SimpleNamespace(productId=70)],
             groundTruth=SimpleNamespace(
-                anchorProductId=70,
                 recommendations=[
                     SimpleNamespace(productId=62, relevance=5),
                     SimpleNamespace(productId=53, relevance=4),
@@ -71,17 +76,16 @@ class RecommendationEvaluationTest(unittest.TestCase):
         response = evaluate_personas([persona], recommender)
         result = response["personas"][0]
 
-        self.assertFalse(result["anchorEvaluation"]["hit"])
-        self.assertFalse(recommender.assertions["exclude_seen"])
+        self.assertTrue(recommender.assertions["exclude_seen"])
         self.assertIsNone(recommender.assertions["category"])
         self.assertEqual(len(recommender.products), recommender.assertions["top_k"])
-        self.assertEqual(91, result["anchorEvaluation"]["predictedProductId"])
+        self.assertNotIn("anchorEvaluation", result)
+        self.assertNotIn("top1AnchorAccuracy", response["summary"])
         self.assertEqual("CLOTHING", result["rankingEvaluation"]["top5"][0]["category"])
-        self.assertEqual(2, result["anchorEvaluation"]["expectedAnchorRank"])
-        self.assertEqual(3, result["rankingEvaluation"]["groundTruthResults"][0]["overallRank"])
+        self.assertEqual(2, result["rankingEvaluation"]["groundTruthResults"][0]["overallRank"])
         self.assertEqual(1.0, result["rankingEvaluation"]["recallAt5"])
         expected_ndcg = (
-            5 / math.log2(4) + 4 / math.log2(5)
+            5 / math.log2(3) + 4 / math.log2(4)
         ) / (
             5 / math.log2(2) + 4 / math.log2(3)
         )
@@ -99,7 +103,6 @@ class RecommendationEvaluationTest(unittest.TestCase):
             arInteractions=[DumpableInteraction(70, "PRODUCT_SELECT", 1)],
             memberWishlists=[],
             groundTruth=SimpleNamespace(
-                anchorProductId=70,
                 recommendations=[SimpleNamespace(productId=62, relevance=5)],
             ),
         )

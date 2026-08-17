@@ -27,7 +27,7 @@ def evaluate_persona(persona, recommender):
         zone_scores=preference_scores,
         category=None,
         top_k=len(recommender.products),
-        exclude_seen=False,
+        exclude_seen=True,
     )
     products_by_id = {
         product.product_id: product for product in recommender.products
@@ -53,31 +53,17 @@ def evaluate_persona(persona, recommender):
         for index, item in enumerate(overall)
     }
     overall_by_id = {item["productId"]: item for item in overall}
-    anchor_id = persona.groundTruth.anchorProductId
-    if anchor_id not in overall_by_id:
-        raise ValueError(
-            f"{persona.personaId}: anchor product {anchor_id} is missing from ranking"
-        )
     missing_truth = set(truth) - set(overall_by_id)
     if missing_truth:
         raise ValueError(
             f"{persona.personaId}: Ground Truth products are missing from ranking: "
             f"{sorted(missing_truth)}"
         )
-    anchor_item = overall_by_id[anchor_id]
     overall_top5 = overall[:5]
 
     return {
         "personaId": persona.personaId,
         "personaType": persona.personaType.upper(),
-        "anchorEvaluation": {
-            "expectedProductId": anchor_id,
-            "predictedProductId": overall[0]["productId"],
-            "hit": overall[0]["productId"] == anchor_id,
-            "expectedAnchorRank": overall_positions[anchor_id],
-            "expectedAnchorScore": anchor_item["score"],
-            "top5": ranked(overall_top5, truth),
-        },
         "rankingEvaluation": {
             "recallAt5": (
                 sum(item["productId"] in truth for item in overall_top5)
@@ -199,10 +185,6 @@ def summarize(results):
 
     return {
         "personaCount": len(results),
-        "top1AnchorAccuracy": statistics.fmean(
-            1.0 if item["anchorEvaluation"]["hit"] else 0.0
-            for item in results
-        ),
         "meanRecallAt5": statistics.fmean(
             item["rankingEvaluation"]["recallAt5"] for item in results
         ),

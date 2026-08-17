@@ -108,7 +108,6 @@ class EvaluationExpectedRecommendationRequest(BaseModel):
 
 
 class EvaluationGroundTruthRequest(BaseModel):
-    anchorProductId: int
     recommendations: List[EvaluationExpectedRecommendationRequest] = Field(min_length=1)
 
 
