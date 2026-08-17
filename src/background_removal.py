@@ -2,6 +2,8 @@ import io
 import logging
 import os
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,6 +19,10 @@ DOWNLOAD_TIMEOUT_SECONDS = 10
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
+REMBG_MODEL_NAME = os.getenv("REMBG_MODEL_NAME", "u2net")
+
+_rembg_session = None
+_rembg_session_lock = threading.Lock()
 
 
 class ImageDownloadError(Exception):
@@ -37,6 +43,27 @@ class BackgroundRemovalError(Exception):
 
 class ImageSaveError(Exception):
     pass
+
+
+def get_rembg_session():
+    """Create the ONNX session once and reuse it across requests."""
+    global _rembg_session
+    if _rembg_session is not None:
+        return _rembg_session
+
+    with _rembg_session_lock:
+        if _rembg_session is None:
+            started_at = time.perf_counter()
+            logger.info("rembg session initialization started. model=%s", REMBG_MODEL_NAME)
+            from rembg import new_session
+
+            _rembg_session = new_session(REMBG_MODEL_NAME)
+            logger.info(
+                "rembg session initialization completed. model=%s, elapsedMs=%.1f",
+                REMBG_MODEL_NAME,
+                (time.perf_counter() - started_at) * 1000,
+            )
+    return _rembg_session
 
 
 def download_image(
@@ -105,21 +132,46 @@ def remove_background(
     remover: Callable[[Image.Image], Image.Image] | None = None,
 ) -> str:
     filename = f"avatar-no-bg-{uuid4()}.png"
+    request_started_at = time.perf_counter()
     logger.info("Background removal started. imageUrl=%s", image_url)
 
     try:
+        step_started_at = time.perf_counter()
         image_data = download_image(image_url)
+        logger.info(
+            "Background source downloaded. imageUrl=%s, bytes=%s, elapsedMs=%.1f",
+            image_url,
+            len(image_data),
+            (time.perf_counter() - step_started_at) * 1000,
+        )
+
+        step_started_at = time.perf_counter()
         image = load_image(image_data)
+        logger.info(
+            "Background source decoded. imageUrl=%s, width=%s, height=%s, elapsedMs=%.1f",
+            image_url,
+            image.width,
+            image.height,
+            (time.perf_counter() - step_started_at) * 1000,
+        )
 
         try:
+            step_started_at = time.perf_counter()
             if remover is None:
                 from rembg import remove as remover
 
-            result = remover(image)
+                result = remover(image, session=get_rembg_session())
+            else:
+                result = remover(image)
             if not isinstance(result, Image.Image):
                 result = Image.open(io.BytesIO(result))
             result = result.convert("RGBA")
             result.load()
+            logger.info(
+                "Background removal inference completed. imageUrl=%s, elapsedMs=%.1f",
+                image_url,
+                (time.perf_counter() - step_started_at) * 1000,
+            )
         except Exception as error:
             raise BackgroundRemovalError(
                 f"Background removal processing failed: {error}"
@@ -127,6 +179,7 @@ def remove_background(
 
         temporary_path = None
         try:
+            step_started_at = time.perf_counter()
             output_directory.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 dir=output_directory,
@@ -137,15 +190,21 @@ def remove_background(
                 temporary_path = Path(temporary_file.name)
                 result.save(temporary_file, format="PNG")
             os.replace(temporary_path, output_directory / filename)
+            logger.info(
+                "Background removal image saved. filename=%s, elapsedMs=%.1f",
+                filename,
+                (time.perf_counter() - step_started_at) * 1000,
+            )
         except (OSError, ValueError) as error:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
             raise ImageSaveError(f"Unable to save processed image: {error}") from error
 
         logger.info(
-            "Background removal completed. imageUrl=%s, filename=%s",
+            "Background removal completed. imageUrl=%s, filename=%s, elapsedMs=%.1f",
             image_url,
             filename,
+            (time.perf_counter() - request_started_at) * 1000,
         )
         return filename
     except Exception as error:
