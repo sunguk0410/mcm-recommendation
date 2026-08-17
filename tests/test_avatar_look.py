@@ -42,6 +42,39 @@ class SelectAvatarLookProductsTest(unittest.TestCase):
 
         self.assertEqual([11, 13], [item["productId"] for item in selected])
 
+    def test_two_interactions_limit_avatar_look_to_three_categories(self):
+        products = [
+            {"productId": 1, "score": 10.0, "category": "BAG"},
+            {"productId": 2, "score": 9.8, "category": "TOP"},
+            {"productId": 3, "score": 9.6, "category": "SHOES"},
+            {"productId": 4, "score": 9.4, "category": "BOTTOM"},
+            {"productId": 5, "score": 0.0, "category": "ACC"},
+        ]
+
+        selected = select_avatar_look_products(
+            products,
+            interaction_count=2,
+        )
+
+        self.assertEqual([1, 2, 3], [item["productId"] for item in selected])
+
+    def test_five_interactions_limit_avatar_look_to_four_categories(self):
+        products = [
+            {"productId": 1, "score": 10.0, "category": "BAG"},
+            {"productId": 2, "score": 9.8, "category": "TOP"},
+            {"productId": 3, "score": 9.6, "category": "SHOES"},
+            {"productId": 4, "score": 9.4, "category": "BOTTOM"},
+            {"productId": 5, "score": 9.2, "category": "ACC"},
+            {"productId": 6, "score": 0.0, "category": "CHARM"},
+        ]
+
+        selected = select_avatar_look_products(
+            products,
+            interaction_count=5,
+        )
+
+        self.assertEqual([1, 2, 3, 4], [item["productId"] for item in selected])
+
 
 if __name__ == "__main__":
     unittest.main()

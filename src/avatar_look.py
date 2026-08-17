@@ -3,8 +3,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-AVATAR_LOOK_THRESHOLD = 0.5
+AVATAR_LOOK_THRESHOLD = 0.75
 AVATAR_LOOK_FALLBACK_LIMIT = 3
+
+
+def get_avatar_look_limit(interaction_count):
+    if interaction_count is None:
+        return None
+    if interaction_count <= 2:
+        return 3
+    if interaction_count <= 5:
+        return 4
+    return None
 
 
 def normalize_avatar_scores(recommendations):
@@ -25,7 +35,11 @@ def normalize_avatar_scores(recommendations):
     ]
 
 
-def select_avatar_look_products(scored_products, ar_session_id=None):
+def select_avatar_look_products(
+    scored_products,
+    ar_session_id=None,
+    interaction_count=None,
+):
     if not scored_products:
         logger.info(
             "Avatar Look selection. arSessionId=%s, scoredProductsCount=0, "
@@ -55,14 +69,23 @@ def select_avatar_look_products(scored_products, ar_session_id=None):
                 best_by_category[candidate["category"]] = candidate
 
         if best_by_category:
-            selected = list(best_by_category.values())
+            selected = sorted(
+                best_by_category.values(),
+                key=lambda item: (-item["normalizedScore"], item["productId"]),
+            )
+            result_limit = get_avatar_look_limit(interaction_count)
+            if result_limit is not None:
+                selected = selected[:result_limit]
             logger.info(
                 "Avatar Look selection. arSessionId=%s, scoredProductsCount=%s, "
                 "thresholdPassCount=%s, rawScoreFallbackApplied=false, "
-                "finalProductsCount=%s, productIds=%s",
+                "interactionCount=%s, resultLimit=%s, finalProductsCount=%s, "
+                "productIds=%s",
                 ar_session_id,
                 len(scored_products),
                 len(candidates),
+                interaction_count,
+                result_limit,
                 len(selected),
                 [item["productId"] for item in selected],
             )

@@ -466,27 +466,20 @@ def recommend_avatar_look(request: AvatarLookRequest):
                 product.category == category
                 for product in recommender.products
             )
-            remaining_candidate_count = sum(
-                product.category == category
-                and product.product_id not in unique_product_ids
-                for product in recommender.products
-            )
             recommendations = recommender.recommend(
                 interactions=interactions,
                 zone_scores=get_zone_scores(request.arSessionId, category),
                 category=category,
                 top_k=category_product_count,
-                exclude_seen=True,
+                exclude_seen=False,
             )
             logger.info(
                 "Avatar Look category. arSessionId=%s, category=%s, "
-                "totalCandidateCount=%s, candidatesBeforeExcludeSeen=%s, "
-                "candidatesAfterExcludeSeen=%s, recommendResultCount=%s",
+                "totalCandidateCount=%s, excludeSeen=false, "
+                "recommendResultCount=%s",
                 request.arSessionId,
                 category,
                 category_product_count,
-                category_product_count,
-                remaining_candidate_count,
                 len(recommendations),
             )
             scored_products.extend(
@@ -506,6 +499,7 @@ def recommend_avatar_look(request: AvatarLookRequest):
         selected_products = select_avatar_look_products(
             scored_products,
             ar_session_id=request.arSessionId,
+            interaction_count=valid_interaction_count,
         )
     except Exception as error:
         logger.exception(
