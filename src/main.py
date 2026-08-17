@@ -122,6 +122,7 @@ class RefreshRecommendationRequest(BaseModel):
 
 class AvatarLookRequest(BaseModel):
     arSessionId: int
+    interactions: List[InteractionRequest]
 
 
 class AvatarLookProduct(BaseModel):
@@ -432,7 +433,10 @@ def remove_image_background(request: RemoveBackgroundRequest):
     response_model=AvatarLookResponse,
 )
 def recommend_avatar_look(request: AvatarLookRequest):
-    interactions = get_session_interactions(request.arSessionId)
+    interactions = [
+        interaction.model_dump()
+        for interaction in request.interactions
+    ]
     valid_interaction_count = sum(
         interaction["productId"] in recommender.mapper.product_to_index
         and interaction["interactionType"] in BEHAVIOR_TO_ID
@@ -443,7 +447,7 @@ def recommend_avatar_look(request: AvatarLookRequest):
         for interaction in interactions
     }
     logger.info(
-        "Avatar Look request. arSessionId=%s, storedInteractionCount=%s, "
+        "Avatar Look request. arSessionId=%s, receivedInteractionCount=%s, "
         "validInteractionCount=%s, uniqueProductIdCount=%s, catalogProductCount=%s",
         request.arSessionId,
         len(interactions),
