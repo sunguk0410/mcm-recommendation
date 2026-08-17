@@ -107,7 +107,6 @@ class EvaluationExpectedRecommendationRequest(BaseModel):
 
 class EvaluationGroundTruthRequest(BaseModel):
     anchorProductId: int
-    category: str = Field(min_length=1)
     recommendations: List[EvaluationExpectedRecommendationRequest] = Field(min_length=1)
 
 

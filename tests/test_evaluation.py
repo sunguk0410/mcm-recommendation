@@ -1,3 +1,4 @@
+import math
 import unittest
 from types import SimpleNamespace
 
@@ -21,16 +22,18 @@ class FixedRecommender:
         self.assertions = {
             "interactions": interactions,
             "exclude_seen": exclude_seen,
+            "category": category,
+            "top_k": top_k,
         }
         scores = {
             70: 0.95,
             50: 0.70,
             62: 0.90,
             53: 0.80,
-            # A higher score in another category must not affect BAG metrics.
+            # A higher score in another category leads the overall ranking.
             91: 1.50,
         }
-        products = [item for item in self.products if item.category == category]
+        products = self.products
         return [
             {"productId": item.product_id, "score": scores[item.product_id]}
             for item in sorted(products, key=lambda item: -scores[item.product_id])[:top_k]
@@ -38,7 +41,7 @@ class FixedRecommender:
 
 
 class RecommendationEvaluationTest(unittest.TestCase):
-    def test_anchor_and_metrics_use_category_rank(self):
+    def test_anchor_and_metrics_use_overall_rank(self):
         recommender = FixedRecommender()
         persona = SimpleNamespace(
             personaId="P1",
@@ -58,7 +61,6 @@ class RecommendationEvaluationTest(unittest.TestCase):
             memberWishlists=[SimpleNamespace(productId=70)],
             groundTruth=SimpleNamespace(
                 anchorProductId=70,
-                category="BAG",
                 recommendations=[
                     SimpleNamespace(productId=62, relevance=5),
                     SimpleNamespace(productId=53, relevance=4),
@@ -69,16 +71,24 @@ class RecommendationEvaluationTest(unittest.TestCase):
         response = evaluate_personas([persona], recommender)
         result = response["personas"][0]
 
-        self.assertTrue(result["anchorEvaluation"]["hit"])
+        self.assertFalse(result["anchorEvaluation"]["hit"])
         self.assertFalse(recommender.assertions["exclude_seen"])
-        self.assertEqual(70, result["anchorEvaluation"]["predictedProductId"])
-        self.assertTrue(all(
-            item["category"] == "BAG"
-            for item in result["anchorEvaluation"]["top5"]
-        ))
-        self.assertEqual(2, result["categoryEvaluation"]["groundTruthResults"][0]["categoryRank"])
-        self.assertEqual(1.0, result["categoryEvaluation"]["recallAt5"])
-        self.assertGreater(result["categoryEvaluation"]["ndcgAt5"], 0.0)
+        self.assertIsNone(recommender.assertions["category"])
+        self.assertEqual(len(recommender.products), recommender.assertions["top_k"])
+        self.assertEqual(91, result["anchorEvaluation"]["predictedProductId"])
+        self.assertEqual("CLOTHING", result["rankingEvaluation"]["top5"][0]["category"])
+        self.assertEqual(2, result["anchorEvaluation"]["expectedAnchorRank"])
+        self.assertEqual(3, result["rankingEvaluation"]["groundTruthResults"][0]["overallRank"])
+        self.assertEqual(1.0, result["rankingEvaluation"]["recallAt5"])
+        expected_ndcg = (
+            5 / math.log2(4) + 4 / math.log2(5)
+        ) / (
+            5 / math.log2(2) + 4 / math.log2(3)
+        )
+        self.assertAlmostEqual(
+            expected_ndcg,
+            result["rankingEvaluation"]["ndcgAt5"],
+        )
 
     def test_guest_uses_empty_member_wishlist(self):
         recommender = FixedRecommender()
@@ -90,7 +100,6 @@ class RecommendationEvaluationTest(unittest.TestCase):
             memberWishlists=[],
             groundTruth=SimpleNamespace(
                 anchorProductId=70,
-                category="BAG",
                 recommendations=[SimpleNamespace(productId=62, relevance=5)],
             ),
         )

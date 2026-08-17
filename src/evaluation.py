@@ -22,21 +22,23 @@ def evaluate_persona(persona, recommender):
         raise ValueError(f"{persona.personaId}: arInteractions cannot be empty")
 
     preference_scores = build_preference_scores(persona, recommender)
-    scored_products = []
-    for category in dict.fromkeys(product.category for product in recommender.products):
-        category_count = sum(
-            product.category == category for product in recommender.products
-        )
-        recommendations = recommender.recommend(
-            interactions=interactions,
-            zone_scores=preference_scores.get(category),
-            category=category,
-            top_k=category_count,
-            exclude_seen=False,
-        )
-        scored_products.extend(
-            {**item, "category": category} for item in recommendations
-        )
+    recommendations = recommender.recommend(
+        interactions=interactions,
+        zone_scores=preference_scores,
+        category=None,
+        top_k=len(recommender.products),
+        exclude_seen=False,
+    )
+    products_by_id = {
+        product.product_id: product for product in recommender.products
+    }
+    scored_products = [
+        {
+            **item,
+            "category": products_by_id[item["productId"]].category,
+        }
+        for item in recommendations
+    ]
 
     overall = sorted(
         scored_products,
@@ -46,67 +48,55 @@ def evaluate_persona(persona, recommender):
         item.productId: item.relevance
         for item in persona.groundTruth.recommendations
     }
-    category = persona.groundTruth.category.strip().upper()
-    category_ranking = [
-        item for item in overall if item["category"] == category
-    ]
-    if not category_ranking:
-        raise ValueError(f"{persona.personaId}: unknown Ground Truth category {category}")
-
-    category_positions = {
+    overall_positions = {
         item["productId"]: index + 1
-        for index, item in enumerate(category_ranking)
+        for index, item in enumerate(overall)
     }
-    category_by_id = {item["productId"]: item for item in category_ranking}
+    overall_by_id = {item["productId"]: item for item in overall}
     anchor_id = persona.groundTruth.anchorProductId
-    if anchor_id not in category_by_id:
+    if anchor_id not in overall_by_id:
         raise ValueError(
-            f"{persona.personaId}: anchor product {anchor_id} is not in "
-            f"Ground Truth category {category}"
+            f"{persona.personaId}: anchor product {anchor_id} is missing from ranking"
         )
-    missing_truth = set(truth) - set(category_by_id)
+    missing_truth = set(truth) - set(overall_by_id)
     if missing_truth:
         raise ValueError(
-            f"{persona.personaId}: Ground Truth products are missing from "
-            f"category {category}: {sorted(missing_truth)}"
+            f"{persona.personaId}: Ground Truth products are missing from ranking: "
+            f"{sorted(missing_truth)}"
         )
-    anchor_item = category_by_id[anchor_id]
-    category_top5 = category_ranking[:5]
+    anchor_item = overall_by_id[anchor_id]
+    overall_top5 = overall[:5]
 
     return {
         "personaId": persona.personaId,
         "personaType": persona.personaType.upper(),
         "anchorEvaluation": {
             "expectedProductId": anchor_id,
-            "predictedProductId": category_ranking[0]["productId"],
-            "hit": category_ranking[0]["productId"] == anchor_id,
-            "expectedAnchorRank": category_positions[anchor_id],
+            "predictedProductId": overall[0]["productId"],
+            "hit": overall[0]["productId"] == anchor_id,
+            "expectedAnchorRank": overall_positions[anchor_id],
             "expectedAnchorScore": anchor_item["score"],
-            "top5": ranked(category_top5, truth),
+            "top5": ranked(overall_top5, truth),
         },
-        "categoryEvaluation": {
-            "category": category,
+        "rankingEvaluation": {
             "recallAt5": (
-                sum(item["productId"] in truth for item in category_top5)
+                sum(item["productId"] in truth for item in overall_top5)
                 / len(truth)
             ),
-            "ndcgAt5": ndcg_at5(category_top5, truth),
-            "top5": ranked(category_top5, truth),
+            "ndcgAt5": ndcg_at5(overall_top5, truth),
+            "top5": ranked(overall_top5, truth),
             "groundTruthResults": [
                 {
                     "productId": expected.productId,
                     "relevance": expected.relevance,
-                    "categoryRank": category_positions.get(expected.productId),
-                    "score": (
-                        category_by_id[expected.productId]["score"]
-                        if expected.productId in category_by_id else None
-                    ),
-                    "includedInTop5": category_positions.get(expected.productId, 6) <= 5,
+                    "overallRank": overall_positions[expected.productId],
+                    "score": overall_by_id[expected.productId]["score"],
+                    "includedInTop5": overall_positions[expected.productId] <= 5,
                 }
                 for expected in persona.groundTruth.recommendations
             ],
         },
-        "confidenceEvaluation": confidence(category_top5),
+        "confidenceEvaluation": confidence(overall_top5),
     }
 
 
@@ -150,7 +140,7 @@ def build_preference_scores(persona, recommender):
             score = zone_score
         else:
             score = member_score
-        result.setdefault(product.category, {})[product.product_id] = score
+        result[product.product_id] = score
     return result
 
 
@@ -170,7 +160,7 @@ def ranked(items, truth):
 def ndcg_at5(top5, truth):
     def dcg(relevances):
         return sum(
-            (2 ** relevance - 1) / math.log2(rank + 1)
+            relevance / math.log2(rank + 1)
             for rank, relevance in enumerate(relevances, start=1)
         )
 
@@ -214,10 +204,10 @@ def summarize(results):
             for item in results
         ),
         "meanRecallAt5": statistics.fmean(
-            item["categoryEvaluation"]["recallAt5"] for item in results
+            item["rankingEvaluation"]["recallAt5"] for item in results
         ),
         "meanNdcgAt5": statistics.fmean(
-            item["categoryEvaluation"]["ndcgAt5"] for item in results
+            item["rankingEvaluation"]["ndcgAt5"] for item in results
         ),
         "confidentGroupAverageGap": average(confident, "top1Top2Gap"),
         "exploratoryGroupAverageGap": average(exploratory, "top1Top2Gap"),
