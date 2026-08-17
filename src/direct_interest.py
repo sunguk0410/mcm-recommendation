@@ -99,8 +99,11 @@ def score_direct_interest(
         product = products_by_id[product_id]
         ranked_products.append({
             "productId": product_id,
+            "name": getattr(product, "name", None),
             "category": product.category,
+            "subCategory": getattr(product, "sub_category", None),
             "zone": product.zone,
+            "color": getattr(product, "color", None),
             "directInterestScore": float(score),
             "latestInteractionPosition": latest_positions.get(product_id, -1),
             "evidence": evidence.get(product_id, []),

@@ -26,6 +26,7 @@ from .dataset import BEHAVIOR_TO_ID
 from .direct_interest import score_direct_interest
 from .evaluation import evaluate_personas
 from .inference import RecRecInference
+from .style_identity import generate_style_identity_title
 
 
 app = FastAPI(
@@ -199,6 +200,11 @@ preferences_lock = RLock()
 member_wishlists: Dict[int, List[int]] = {}
 member_wishlists_lock = RLock()
 
+# Raw store movement is retained for Style Identity generation without
+# changing the existing Spring request contract.
+zone_interaction_contexts: Dict[int, List[dict]] = {}
+zone_interaction_contexts_lock = RLock()
+
 # Latest successful recommendation interactions per session. Like preferences,
 # these process-local values are reset whenever the server restarts.
 session_interactions: Dict[int, List[dict]] = {}
@@ -257,6 +263,11 @@ def store_preferences(ar_session_id, zone_interactions, member_interactions):
             int(interaction.productId)
             for interaction in member_interactions
         ]
+    with zone_interaction_contexts_lock:
+        zone_interaction_contexts[ar_session_id] = [
+            interaction.model_dump()
+            for interaction in zone_interactions
+        ]
 
 
 def get_zone_scores(ar_session_id, category):
@@ -268,6 +279,14 @@ def get_zone_scores(ar_session_id, category):
 def get_member_wishlist_product_ids(ar_session_id):
     with member_wishlists_lock:
         return list(member_wishlists.get(ar_session_id, []))
+
+
+def get_zone_interaction_contexts(ar_session_id):
+    with zone_interaction_contexts_lock:
+        return [
+            dict(item)
+            for item in zone_interaction_contexts.get(ar_session_id, [])
+        ]
 
 
 def store_session_interactions(ar_session_id, interactions):
@@ -532,6 +551,10 @@ def recommend_avatar_look(request: AvatarLookRequest):
             scored_products,
             ar_session_id=request.arSessionId,
         )
+        style_identity_title = generate_style_identity_title(
+            selected_products=selected_products,
+            zone_interactions=get_zone_interaction_contexts(request.arSessionId),
+        )
     except Exception as error:
         logger.exception(
             "Avatar Look failed. arSessionId=%s, error=%s",
@@ -542,7 +565,7 @@ def recommend_avatar_look(request: AvatarLookRequest):
 
     return {
         "arSessionId": request.arSessionId,
-        "styleIdentityTitle": get_style_identity_title(),
+        "styleIdentityTitle": style_identity_title,
         "products": [
             {"productId": item["productId"]}
             for item in selected_products
