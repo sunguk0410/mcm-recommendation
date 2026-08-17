@@ -23,6 +23,7 @@ from .contrastive_refresh import (
     select_contrastive_products,
 )
 from .dataset import BEHAVIOR_TO_ID
+from .direct_interest import score_direct_interest
 from .evaluation import evaluate_personas
 from .inference import RecRecInference
 
@@ -193,6 +194,11 @@ ZONE_ALIASES = {
 preferences: Dict[int, Dict[str, Dict[str, float]]] = {}
 preferences_lock = RLock()
 
+# Raw online wishlist product IDs are retained separately for deterministic
+# Avatar Look interest scoring. The existing preference scores remain unchanged.
+member_wishlists: Dict[int, List[int]] = {}
+member_wishlists_lock = RLock()
+
 # Latest successful recommendation interactions per session. Like preferences,
 # these process-local values are reset whenever the server restarts.
 session_interactions: Dict[int, List[dict]] = {}
@@ -246,12 +252,22 @@ def store_preferences(ar_session_id, zone_interactions, member_interactions):
 
     with preferences_lock:
         preferences[ar_session_id] = category_preferences
+    with member_wishlists_lock:
+        member_wishlists[ar_session_id] = [
+            int(interaction.productId)
+            for interaction in member_interactions
+        ]
 
 
 def get_zone_scores(ar_session_id, category):
     with preferences_lock:
         scores = preferences.get(ar_session_id, {}).get(category)
         return dict(scores) if scores is not None else None
+
+
+def get_member_wishlist_product_ids(ar_session_id):
+    with member_wishlists_lock:
+        return list(member_wishlists.get(ar_session_id, []))
 
 
 def store_session_interactions(ar_session_id, interactions):
@@ -498,60 +514,28 @@ def recommend_avatar_look(request: AvatarLookRequest):
         len(recommender.products),
     )
 
-    current_category = None
     try:
-        categories = list(dict.fromkeys(
-            product.category
-            for product in recommender.products
-        ))
-
-        scored_products = []
-        for category in categories:
-            current_category = category
-            category_product_count = sum(
-                product.category == category
-                for product in recommender.products
-            )
-            recommendations = recommender.recommend(
-                interactions=interactions,
-                zone_scores=get_zone_scores(request.arSessionId, category),
-                category=category,
-                top_k=category_product_count,
-                exclude_seen=False,
-            )
-            logger.info(
-                "Avatar Look category. arSessionId=%s, category=%s, "
-                "totalCandidateCount=%s, excludeSeen=false, "
-                "recommendResultCount=%s",
-                request.arSessionId,
-                category,
-                category_product_count,
-                len(recommendations),
-            )
-            scored_products.extend(
-                {
-                    **item,
-                    "category": category,
-                }
-                for item in recommendations
-            )
-
-        current_category = None
+        scored_products = score_direct_interest(
+            products=recommender.products,
+            online_wishlist_product_ids=get_member_wishlist_product_ids(
+                request.arSessionId
+            ),
+            interactions=interactions,
+        )
         logger.info(
-            "Avatar Look scoring complete. arSessionId=%s, scoredProductsCount=%s",
+            "Avatar Look direct interest scoring complete. arSessionId=%s, "
+            "scoredProductsCount=%s",
             request.arSessionId,
             len(scored_products),
         )
         selected_products = select_avatar_look_products(
             scored_products,
             ar_session_id=request.arSessionId,
-            interaction_count=valid_interaction_count,
         )
     except Exception as error:
         logger.exception(
-            "Avatar Look failed. arSessionId=%s, category=%s, error=%s",
+            "Avatar Look failed. arSessionId=%s, error=%s",
             request.arSessionId,
-            current_category,
             error,
         )
         raise
