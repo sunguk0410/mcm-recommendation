@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import pandas as pd
+import re
 
 from .recrec import RecRec
 from .dataset import (
@@ -14,6 +15,21 @@ CHECKPOINT_PATH = "checkpoints/recrec_v2_best.pt"
 CATALOG_PATH = "MCM_제품리스트_통합_추천모델용.xlsx"
 
 MAX_SEQ_LEN = 64
+
+COMPLEMENTARY_CATEGORY_BONUSES = {
+    "BAG": {"ACCESSORIES": 0.08, "SHOES": 0.06, "TOP": 0.04},
+    "BOTTOM": {"TOP": 0.10, "SHOES": 0.07, "ACCESSORIES": 0.05},
+    "TOP": {"BOTTOM": 0.10, "ACCESSORIES": 0.06, "SHOES": 0.04},
+    "SHOES": {"BOTTOM": 0.08, "BAG": 0.06, "TOP": 0.04},
+    "ACCESSORIES": {"BAG": 0.08, "TOP": 0.06, "BOTTOM": 0.04},
+}
+
+MAX_DIVERSE_PRODUCTS_PER_CATEGORY = 2
+DEFAULT_DIVERSITY_WINDOW = 5
+CONTENT_STOP_WORDS = {
+    "mcm", "x", "비세토스", "모노그램", "레더", "가죽", "코튼",
+    "로고", "프린트", "백", "티셔츠", "셔츠", "팬츠", "블랙",
+}
 
 class RecRecInference:
 
@@ -257,6 +273,124 @@ class RecRecInference:
             return preference_scores[product.product_id]
         return preference_scores.get(product.zone, 0.0)
 
+    @staticmethod
+    def _rec_weight(interaction_count):
+        if interaction_count <= 2:
+            return 0.70
+        if interaction_count <= 5:
+            return 0.75
+        return 0.80
+
+    @staticmethod
+    def _excluded_product_ids(
+        interactions,
+        preference_product_ids,
+        exclude_seen,
+    ):
+        if not exclude_seen:
+            return set()
+        return {
+            int(interaction["productId"])
+            for interaction in interactions
+        } | {
+            int(product_id)
+            for product_id in (preference_product_ids or [])
+        }
+
+    def _complementary_bonus(self, candidate, interactions):
+        source_categories = []
+        for interaction in interactions:
+            product = self.product_by_id.get(int(interaction["productId"]))
+            if product is not None:
+                source_categories.append(product.category)
+
+        bonus = 0.0
+        for recency_index, source_category in enumerate(reversed(source_categories)):
+            recency_factor = max(0.5, 1.0 - 0.15 * recency_index)
+            category_bonus = COMPLEMENTARY_CATEGORY_BONUSES.get(
+                source_category,
+                {},
+            ).get(candidate.category, 0.0)
+            bonus = max(bonus, category_bonus * recency_factor)
+        return bonus
+
+    @staticmethod
+    def _name_tokens(name):
+        return {
+            token
+            for token in re.findall(r"[0-9a-zA-Z가-힣]+", name.casefold())
+            if len(token) > 1 and token not in CONTENT_STOP_WORDS
+        }
+
+    def _content_bonus(
+        self,
+        candidate,
+        interactions,
+        preference_product_ids,
+    ):
+        preference_product_ids = {
+            int(product_id) for product_id in (preference_product_ids or [])
+        }
+        reference_ids = [
+            int(interaction["productId"])
+            for interaction in interactions
+        ] + list(preference_product_ids)
+        candidate_tokens = self._name_tokens(candidate.name)
+        best_bonus = 0.0
+
+        for product_id in reference_ids:
+            reference = self.product_by_id.get(product_id)
+            if reference is None or reference.product_id == candidate.product_id:
+                continue
+
+            shared_tokens = candidate_tokens & self._name_tokens(reference.name)
+            bonus = min(0.12, 0.06 * len(shared_tokens))
+            if (
+                candidate.sub_category
+                and reference.sub_category
+                and candidate.sub_category == reference.sub_category
+            ):
+                bonus += 0.04
+            if candidate.color and candidate.color == reference.color:
+                bonus += 0.015
+            if candidate.zone == reference.zone:
+                bonus += 0.015
+            if candidate.category == reference.category:
+                bonus += 0.02
+            best_bonus = max(best_bonus, min(0.18, bonus))
+
+        return best_bonus
+
+    @staticmethod
+    def _diverse_positions(products, scores, result_count):
+        ranked_positions = sorted(
+            range(len(products)),
+            key=lambda position: (-float(scores[position]), products[position].product_id),
+        )
+        diversity_window = min(DEFAULT_DIVERSITY_WINDOW, result_count)
+        selected = []
+        deferred = []
+        category_counts = {}
+
+        for position in ranked_positions:
+            category = products[position].category
+            if (
+                len(selected) < diversity_window
+                and category_counts.get(category, 0)
+                < MAX_DIVERSE_PRODUCTS_PER_CATEGORY
+            ):
+                selected.append(position)
+                category_counts[category] = category_counts.get(category, 0) + 1
+            else:
+                deferred.append(position)
+
+        if len(selected) < diversity_window:
+            needed = diversity_window - len(selected)
+            selected.extend(deferred[:needed])
+            deferred = deferred[needed:]
+
+        return (selected + deferred)[:result_count]
+
     @torch.no_grad()
     def _recommend_legacy(
         self,
@@ -377,6 +511,8 @@ class RecRecInference:
         top_k=6,
         category=None,
         exclude_seen=True,
+        diversify=False,
+        preference_product_ids=None,
     ):
         zone_scores = zone_scores or {}
         category = category.strip().upper() if category else None
@@ -388,10 +524,11 @@ class RecRecInference:
         if not candidates:
             raise ValueError(f"Unknown category: {category}")
 
-        seen_products = {
-            int(interaction["productId"])
-            for interaction in interactions
-        } if exclude_seen else set()
+        seen_products = self._excluded_product_ids(
+            interactions,
+            preference_product_ids,
+            exclude_seen,
+        )
         candidates = [
             product for product in candidates
             if product.product_id not in seen_products
@@ -441,7 +578,7 @@ class RecRecInference:
             else:
                 rec_scores = torch.zeros_like(candidate_logits)
 
-            rec_weight = 0.7 if len(interactions) <= 2 else 0.9
+            rec_weight = self._rec_weight(len(interactions))
             candidate_zone_scores = torch.tensor(
                 [
                     self._initial_preference_score(product, zone_scores)
@@ -457,15 +594,50 @@ class RecRecInference:
         else:
             final_scores = candidate_logits
 
+        content_bonuses = torch.tensor(
+            [
+                self._content_bonus(
+                    product,
+                    interactions,
+                    preference_product_ids,
+                )
+                for product in candidates
+            ],
+            dtype=final_scores.dtype,
+            device=self.device,
+        )
+        final_scores = final_scores + content_bonuses
+
+        if diversify and category is None:
+            complementary_bonuses = torch.tensor(
+                [
+                    self._complementary_bonus(product, interactions)
+                    for product in candidates
+                ],
+                dtype=final_scores.dtype,
+                device=self.device,
+            )
+            final_scores = final_scores + complementary_bonuses
+
         result_count = min(top_k, len(candidates))
-        values, positions = torch.topk(final_scores, k=result_count)
+        if diversify and category is None:
+            positions = self._diverse_positions(
+                candidates,
+                final_scores,
+                result_count,
+            )
+            values = [float(final_scores[position]) for position in positions]
+        else:
+            tensor_values, tensor_positions = torch.topk(
+                final_scores,
+                k=result_count,
+            )
+            values = tensor_values.tolist()
+            positions = tensor_positions.tolist()
         return [
             {
                 "productId": candidates[position].product_id,
                 "score": float(score),
             }
-            for score, position in zip(
-                values.tolist(),
-                positions.tolist(),
-            )
+            for score, position in zip(values, positions)
         ]

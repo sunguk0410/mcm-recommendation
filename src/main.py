@@ -26,6 +26,7 @@ from .dataset import BEHAVIOR_TO_ID
 from .direct_interest import score_direct_interest
 from .evaluation import evaluate_personas
 from .inference import RecRecInference
+from .preference import build_product_preference_scores
 from .style_identity import generate_style_identity_title
 
 
@@ -186,10 +187,6 @@ class RemoveBackgroundResponse(BaseModel):
     imageUrl: str
 
 
-ZONE_ALIASES = {
-    "NEW_COLLECTION": "NEW",
-}
-
 # Process-local MVP storage. Preferences are reset whenever the server restarts.
 preferences: Dict[int, Dict[str, Dict[str, float]]] = {}
 preferences_lock = RLock()
@@ -216,44 +213,22 @@ recent_category_recommendations_lock = RLock()
 
 
 def store_preferences(ar_session_id, zone_interactions, member_interactions):
-    dwell_by_category = {}
-    for interaction in zone_interactions:
-        category = interaction.category.strip().upper()
-        zone = interaction.zone.strip().upper()
-        zone = ZONE_ALIASES.get(zone, zone)
-        dwell_seconds = max(0.0, interaction.dwellSeconds)
-        category_dwell = dwell_by_category.setdefault(category, {})
-        category_dwell[zone] = category_dwell.get(zone, 0.0) + dwell_seconds
-
-    zone_preferences = {}
-    for category, zone_dwell in dwell_by_category.items():
-        total_dwell = sum(zone_dwell.values())
-        zone_preferences[category] = {
-            zone: dwell / total_dwell if total_dwell > 0 else 0.0
-            for zone, dwell in zone_dwell.items()
-        }
-
     member_scores = (
         recommender.build_wishlist_preference_scores(member_interactions)
         if member_interactions
         else {}
     )
-    has_zone_preferences = bool(zone_interactions)
-    has_member_preferences = bool(member_interactions)
+    product_scores = build_product_preference_scores(
+        recommender.products,
+        zone_interactions,
+        member_scores,
+    )
     category_preferences = {}
 
     for product in recommender.products:
-        zone_score = zone_preferences.get(product.category, {}).get(product.zone, 0.0)
-        member_score = member_scores.get(product.product_id, 0.0)
-
-        if has_zone_preferences and has_member_preferences:
-            score = 0.7 * zone_score + 0.3 * member_score
-        elif has_zone_preferences:
-            score = zone_score
-        else:
-            score = member_score
-
-        category_preferences.setdefault(product.category, {})[product.product_id] = score
+        category_preferences.setdefault(product.category, {})[product.product_id] = (
+            product_scores[product.product_id]
+        )
 
     with preferences_lock:
         preferences[ar_session_id] = category_preferences
@@ -382,6 +357,9 @@ def recommend(
             zone_scores=zone_scores,
             category=category,
             top_k=request.topK,
+            preference_product_ids=get_member_wishlist_product_ids(
+                request.arSessionId
+            ),
             exclude_seen=True,
         )
 
@@ -432,6 +410,9 @@ def refresh_recommendations(
                 zone_scores=get_zone_scores(arSessionId, category),
                 category=category,
                 top_k=6,
+                preference_product_ids=get_member_wishlist_product_ids(
+                    arSessionId
+                ),
                 exclude_seen=True,
             )
         else:
@@ -444,6 +425,9 @@ def refresh_recommendations(
                 zone_scores=get_zone_scores(arSessionId, category),
                 category=category,
                 top_k=category_product_count,
+                preference_product_ids=get_member_wishlist_product_ids(
+                    arSessionId
+                ),
                 exclude_seen=True,
             )
             previous_ids = {

@@ -1,8 +1,8 @@
 import math
 import statistics
 
+from .preference import build_product_preference_scores
 
-ZONE_ALIASES = {"NEW_COLLECTION": "NEW"}
 
 
 def evaluate_personas(personas, recommender):
@@ -28,6 +28,10 @@ def evaluate_persona(persona, recommender):
         category=None,
         top_k=len(recommender.products),
         exclude_seen=True,
+        diversify=persona.personaType.upper() == "EXPLORATORY",
+        preference_product_ids=[
+            item.productId for item in persona.memberWishlists
+        ],
     )
     products_by_id = {
         product.product_id: product for product in recommender.products
@@ -40,10 +44,9 @@ def evaluate_persona(persona, recommender):
         for item in recommendations
     ]
 
-    overall = sorted(
-        scored_products,
-        key=lambda item: (-item["score"], item["productId"]),
-    )
+    # `recommend` may apply a diversity reranker whose final order is not a
+    # pure score sort. Preserve that order as the ranking being evaluated.
+    overall = scored_products
     truth = {
         item.productId: item.relevance
         for item in persona.groundTruth.recommendations
@@ -87,47 +90,15 @@ def evaluate_persona(persona, recommender):
 
 
 def build_preference_scores(persona, recommender):
-    dwell_by_category = {}
-    for interaction in sorted(
-        persona.zoneInteractions,
-        key=lambda item: item.sequenceNo,
-    ):
-        category = interaction.category.strip().upper()
-        zone = ZONE_ALIASES.get(
-            interaction.zone.strip().upper(),
-            interaction.zone.strip().upper(),
-        )
-        category_dwell = dwell_by_category.setdefault(category, {})
-        category_dwell[zone] = (
-            category_dwell.get(zone, 0.0) + max(0.0, interaction.dwellSeconds)
-        )
-
-    zone_preferences = {}
-    for category, dwell_by_zone in dwell_by_category.items():
-        total = sum(dwell_by_zone.values())
-        zone_preferences[category] = {
-            zone: dwell / total if total else 0.0
-            for zone, dwell in dwell_by_zone.items()
-        }
-
     member_scores = (
         recommender.build_wishlist_preference_scores(persona.memberWishlists)
         if persona.memberWishlists else {}
     )
-    has_zone = bool(persona.zoneInteractions)
-    has_member = bool(persona.memberWishlists)
-    result = {}
-    for product in recommender.products:
-        zone_score = zone_preferences.get(product.category, {}).get(product.zone, 0.0)
-        member_score = member_scores.get(product.product_id, 0.0)
-        if has_zone and has_member:
-            score = 0.7 * zone_score + 0.3 * member_score
-        elif has_zone:
-            score = zone_score
-        else:
-            score = member_score
-        result[product.product_id] = score
-    return result
+    return build_product_preference_scores(
+        recommender.products,
+        sorted(persona.zoneInteractions, key=lambda item: item.sequenceNo),
+        member_scores,
+    )
 
 
 def ranked(items, truth):

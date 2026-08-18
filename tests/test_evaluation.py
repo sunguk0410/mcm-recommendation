@@ -18,12 +18,23 @@ class FixedRecommender:
     def build_wishlist_preference_scores(self, interactions):
         return {item.productId: 1.0 for item in interactions}
 
-    def recommend(self, interactions, zone_scores, category, top_k, exclude_seen):
+    def recommend(
+        self,
+        interactions,
+        zone_scores,
+        category,
+        top_k,
+        exclude_seen,
+        diversify=False,
+        preference_product_ids=None,
+    ):
         self.assertions = {
             "interactions": interactions,
             "exclude_seen": exclude_seen,
             "category": category,
             "top_k": top_k,
+            "diversify": diversify,
+            "preference_product_ids": preference_product_ids,
         }
         scores = {
             70: 0.95,
@@ -78,6 +89,7 @@ class RecommendationEvaluationTest(unittest.TestCase):
 
         self.assertTrue(recommender.assertions["exclude_seen"])
         self.assertIsNone(recommender.assertions["category"])
+        self.assertFalse(recommender.assertions["diversify"])
         self.assertEqual(len(recommender.products), recommender.assertions["top_k"])
         self.assertNotIn("anchorEvaluation", result)
         self.assertNotIn("top1AnchorAccuracy", response["summary"])
@@ -110,6 +122,7 @@ class RecommendationEvaluationTest(unittest.TestCase):
         response = evaluate_personas([persona], recommender)
 
         self.assertEqual(1, response["summary"]["personaCount"])
+        self.assertTrue(recommender.assertions["diversify"])
 
 
 class DumpableInteraction:
