@@ -77,3 +77,41 @@ def test_wishlist_products_are_treated_as_seen_candidates():
     )
 
     assert excluded == {1, 2}
+
+
+def test_recommend_filters_candidates_by_gender_and_keeps_unisex():
+    recommender = RecRecInference.__new__(RecRecInference)
+    recommender.products = [
+        SimpleNamespace(product_id=1, category="SHOES", gender="MALE"),
+        SimpleNamespace(product_id=2, category="SHOES", gender="FEMALE"),
+        SimpleNamespace(product_id=3, category="SHOES", gender="UNISEX"),
+    ]
+    recommender._initial_preference_score = lambda product, scores: float(product.product_id)
+
+    recommendations = recommender.recommend(
+        interactions=[],
+        category="SHOES",
+        gender="female",
+        top_k=6,
+    )
+
+    assert [item["productId"] for item in recommendations] == [3, 2]
+
+
+def test_recommend_does_not_filter_bags_by_gender():
+    recommender = RecRecInference.__new__(RecRecInference)
+    recommender.products = [
+        SimpleNamespace(product_id=1, category="BAG", gender="MALE"),
+        SimpleNamespace(product_id=2, category="BAG", gender="FEMALE"),
+        SimpleNamespace(product_id=3, category="BAG", gender="UNISEX"),
+    ]
+    recommender._initial_preference_score = lambda product, scores: float(product.product_id)
+
+    recommendations = recommender.recommend(
+        interactions=[],
+        category="BAG",
+        gender="FEMALE",
+        top_k=6,
+    )
+
+    assert [item["productId"] for item in recommendations] == [3, 2, 1]

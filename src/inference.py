@@ -510,16 +510,25 @@ class RecRecInference:
         zone_scores=None,
         top_k=6,
         category=None,
+        gender=None,
         exclude_seen=True,
         diversify=False,
         preference_product_ids=None,
     ):
         zone_scores = zone_scores or {}
         category = category.strip().upper() if category else None
+        gender = gender.strip().upper() if gender else None
 
         candidates = [
             product for product in self.products
-            if category is None or product.category == category
+            if (category is None or product.category == category)
+            and (
+                category == "BAG"
+                or
+                gender is None
+                or product.gender == gender
+                or product.gender == "UNISEX"
+            )
         ]
         if not candidates:
             raise ValueError(f"Unknown category: {category}")

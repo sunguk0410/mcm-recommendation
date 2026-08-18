@@ -139,6 +139,8 @@ class PreferenceInitializeResponse(BaseModel):
 class RecommendationRequest(BaseModel):
     arSessionId: int
 
+    gender: Literal["MALE", "FEMALE"]
+
     interactions: List[InteractionRequest] = Field(
         default_factory=list
     )
@@ -205,6 +207,10 @@ zone_interaction_contexts_lock = RLock()
 # these process-local values are reset whenever the server restarts.
 session_interactions: Dict[int, List[dict]] = {}
 session_interactions_lock = RLock()
+
+# Gender used for recommendation candidate filtering in each AR session.
+session_genders: Dict[int, str] = {}
+session_genders_lock = RLock()
 
 # Latest result and interaction snapshot per session/category. Process-local,
 # matching the lifetime of the existing preference and interaction stores.
@@ -274,6 +280,16 @@ def get_session_interactions(ar_session_id):
             dict(item)
             for item in session_interactions.get(ar_session_id, [])
         ]
+
+
+def store_session_gender(ar_session_id, gender):
+    with session_genders_lock:
+        session_genders[ar_session_id] = gender
+
+
+def get_session_gender(ar_session_id):
+    with session_genders_lock:
+        return session_genders.get(ar_session_id)
 
 
 def store_recent_category_recommendations(
@@ -356,6 +372,7 @@ def recommend(
             interactions=interactions,
             zone_scores=zone_scores,
             category=category,
+            gender=request.gender,
             top_k=request.topK,
             preference_product_ids=get_member_wishlist_product_ids(
                 request.arSessionId
@@ -370,6 +387,7 @@ def recommend(
         ) from error
 
     store_session_interactions(request.arSessionId, interactions)
+    store_session_gender(request.arSessionId, request.gender)
     store_recent_category_recommendations(
         request.arSessionId,
         category,
@@ -398,6 +416,12 @@ def refresh_recommendations(
         interactions = get_session_interactions(arSessionId)
 
     recent = get_recent_category_recommendations(arSessionId, category)
+    gender = get_session_gender(arSessionId)
+    if gender is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Call /recommend with gender before refreshing recommendations",
+        )
     interaction_added = (
         recent is None
         or has_new_interactions(interactions, recent["interactions"])
@@ -409,6 +433,7 @@ def refresh_recommendations(
                 interactions=interactions,
                 zone_scores=get_zone_scores(arSessionId, category),
                 category=category,
+                gender=gender,
                 top_k=6,
                 preference_product_ids=get_member_wishlist_product_ids(
                     arSessionId
@@ -418,12 +443,17 @@ def refresh_recommendations(
         else:
             category_product_count = sum(
                 product.category == category
+                and (
+                    category == "BAG"
+                    or product.gender in {gender, "UNISEX"}
+                )
                 for product in recommender.products
             )
             scored_products = recommender.recommend(
                 interactions=interactions,
                 zone_scores=get_zone_scores(arSessionId, category),
                 category=category,
+                gender=gender,
                 top_k=category_product_count,
                 preference_product_ids=get_member_wishlist_product_ids(
                     arSessionId
