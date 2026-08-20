@@ -25,7 +25,12 @@ SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
 REMBG_MODEL_NAME = os.getenv("REMBG_MODEL_NAME", "u2net")
 
 _rembg_session = None
+_rembg_remove = None
+_rembg_new_session = None
+_rembg_import_lock = threading.Lock()
 _rembg_session_lock = threading.Lock()
+_request_count = 0
+_request_count_lock = threading.Lock()
 
 
 class ImageDownloadError(Exception):
@@ -48,25 +53,69 @@ class ImageSaveError(Exception):
     pass
 
 
+def import_rembg():
+    """Import rembg once, outside the latency-sensitive request path."""
+    global _rembg_remove, _rembg_new_session
+    if _rembg_remove is not None and _rembg_new_session is not None:
+        return _rembg_remove, _rembg_new_session
+
+    with _rembg_import_lock:
+        if _rembg_remove is None or _rembg_new_session is None:
+            started_at = time.perf_counter()
+            logger.info("rembg import started")
+            from rembg import new_session, remove
+
+            _rembg_remove = remove
+            _rembg_new_session = new_session
+            logger.info(
+                "rembg import completed. elapsedMs=%.1f",
+                (time.perf_counter() - started_at) * 1000,
+            )
+    return _rembg_remove, _rembg_new_session
+
+
 def get_rembg_session():
     """Create the ONNX session once and reuse it across requests."""
     global _rembg_session
     if _rembg_session is not None:
-        return _rembg_session
+        return _rembg_session, True
+
+    _, new_session = import_rembg()
 
     with _rembg_session_lock:
         if _rembg_session is None:
             started_at = time.perf_counter()
             logger.info("rembg session initialization started. model=%s", REMBG_MODEL_NAME)
-            from rembg import new_session
-
             _rembg_session = new_session(REMBG_MODEL_NAME)
             logger.info(
                 "rembg session initialization completed. model=%s, elapsedMs=%.1f",
                 REMBG_MODEL_NAME,
                 (time.perf_counter() - started_at) * 1000,
             )
-    return _rembg_session
+            return _rembg_session, False
+    return _rembg_session, True
+
+
+def initialize_background_removal():
+    """Warm up rembg and its model session during application startup."""
+    started_at = time.perf_counter()
+    logger.info("Background removal startup initialization started")
+    import_rembg()
+    _, session_reused = get_rembg_session()
+    logger.info(
+        "Background removal startup initialization completed. "
+        "model=%s, sessionReused=%s, elapsedMs=%.1f",
+        REMBG_MODEL_NAME,
+        session_reused,
+        (time.perf_counter() - started_at) * 1000,
+    )
+
+
+def _next_request_number():
+    global _request_count
+    with _request_count_lock:
+        _request_count += 1
+        return _request_count
 
 
 def download_image(
@@ -135,14 +184,21 @@ def remove_background(
     remover: Callable[[Image.Image], Image.Image] | None = None,
 ) -> str:
     filename = f"avatar-no-bg-{uuid4()}.png"
+    request_number = _next_request_number()
     request_started_at = time.perf_counter()
-    logger.info("Background removal started. imageUrl=%s", image_url)
+    logger.info(
+        "Background removal started. requestNumber=%s, imageUrl=%s",
+        request_number,
+        image_url,
+    )
 
     try:
         step_started_at = time.perf_counter()
         image_data = download_image(image_url)
         logger.info(
-            "Background source downloaded. imageUrl=%s, bytes=%s, elapsedMs=%.1f",
+            "Background source downloaded. requestNumber=%s, imageUrl=%s, "
+            "bytes=%s, elapsedMs=%.1f",
+            request_number,
             image_url,
             len(image_data),
             (time.perf_counter() - step_started_at) * 1000,
@@ -151,7 +207,9 @@ def remove_background(
         step_started_at = time.perf_counter()
         image = load_image(image_data)
         logger.info(
-            "Background source decoded. imageUrl=%s, width=%s, height=%s, elapsedMs=%.1f",
+            "Background source decoded. requestNumber=%s, imageUrl=%s, "
+            "width=%s, height=%s, elapsedMs=%.1f",
+            request_number,
             image_url,
             image.width,
             image.height,
@@ -161,17 +219,30 @@ def remove_background(
         try:
             step_started_at = time.perf_counter()
             if remover is None:
-                from rembg import remove as remover
-
-                result = remover(image, session=get_rembg_session())
+                remover, _ = import_rembg()
+                session_acquire_started_at = time.perf_counter()
+                session, session_reused = get_rembg_session()
+                logger.info(
+                    "Background removal session acquired. requestNumber=%s, "
+                    "model=%s, sessionReused=%s, elapsedMs=%.1f",
+                    request_number,
+                    REMBG_MODEL_NAME,
+                    session_reused,
+                    (time.perf_counter() - session_acquire_started_at) * 1000,
+                )
+                step_started_at = time.perf_counter()
+                result = remover(image, session=session)
             else:
+                step_started_at = time.perf_counter()
                 result = remover(image)
             if not isinstance(result, Image.Image):
                 result = Image.open(io.BytesIO(result))
             result = result.convert("RGBA")
             result.load()
             logger.info(
-                "Background removal inference completed. imageUrl=%s, elapsedMs=%.1f",
+                "Background removal inference completed. requestNumber=%s, "
+                "imageUrl=%s, elapsedMs=%.1f",
+                request_number,
                 image_url,
                 (time.perf_counter() - step_started_at) * 1000,
             )
@@ -194,7 +265,9 @@ def remove_background(
                 result.save(temporary_file, format="PNG")
             os.replace(temporary_path, output_directory / filename)
             logger.info(
-                "Background removal image saved. filename=%s, elapsedMs=%.1f",
+                "Background removal image saved. requestNumber=%s, filename=%s, "
+                "elapsedMs=%.1f",
+                request_number,
                 filename,
                 (time.perf_counter() - step_started_at) * 1000,
             )
@@ -204,7 +277,9 @@ def remove_background(
             raise ImageSaveError(f"Unable to save processed image: {error}") from error
 
         logger.info(
-            "Background removal completed. imageUrl=%s, filename=%s, elapsedMs=%.1f",
+            "Background removal completed. requestNumber=%s, imageUrl=%s, "
+            "filename=%s, elapsedMs=%.1f",
+            request_number,
             image_url,
             filename,
             (time.perf_counter() - request_started_at) * 1000,
@@ -212,8 +287,9 @@ def remove_background(
         return filename
     except Exception as error:
         logger.exception(
-            "Background removal failed. imageUrl=%s, filename=%s, "
+            "Background removal failed. requestNumber=%s, imageUrl=%s, filename=%s, "
             "elapsedMs=%.1f, error=%s",
+            request_number,
             image_url,
             filename,
             (time.perf_counter() - request_started_at) * 1000,

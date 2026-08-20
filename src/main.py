@@ -16,6 +16,7 @@ from .background_removal import (
     ImageSaveError,
     ImageTooLargeError,
     UnsupportedImageError,
+    initialize_background_removal,
     remove_background,
 )
 from .contrastive_refresh import (
@@ -34,6 +35,13 @@ app = FastAPI(
     title="MCM Recommendation API",
     version="1.0.0",
 )
+
+
+@app.on_event("startup")
+def warm_up_background_removal():
+    initialize_background_removal()
+
+
 logger = logging.getLogger(__name__)
 generated_image_directory = Path("generated").resolve()
 app.mount(

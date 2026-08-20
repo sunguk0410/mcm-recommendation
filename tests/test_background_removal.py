@@ -63,3 +63,27 @@ def test_processing_failure_has_specific_error(monkeypatch, tmp_path):
             tmp_path,
             remover=fail,
         )
+
+
+def test_rembg_session_is_created_once_and_reused(monkeypatch):
+    created_sessions = []
+
+    def fake_new_session(model_name):
+        session = object()
+        created_sessions.append((model_name, session))
+        return session
+
+    monkeypatch.setattr(background_removal, "_rembg_session", None)
+    monkeypatch.setattr(
+        background_removal,
+        "import_rembg",
+        lambda: (object(), fake_new_session),
+    )
+
+    first_session, first_reused = background_removal.get_rembg_session()
+    second_session, second_reused = background_removal.get_rembg_session()
+
+    assert first_session is second_session
+    assert first_reused is False
+    assert second_reused is True
+    assert created_sessions == [(background_removal.REMBG_MODEL_NAME, first_session)]
