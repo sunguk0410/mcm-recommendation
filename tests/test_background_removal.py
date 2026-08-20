@@ -87,3 +87,27 @@ def test_rembg_session_is_created_once_and_reused(monkeypatch):
     assert first_reused is False
     assert second_reused is True
     assert created_sessions == [(background_removal.REMBG_MODEL_NAME, first_session)]
+
+
+def test_startup_initialization_runs_inference_warmup(monkeypatch):
+    session = object()
+    warmup_calls = []
+
+    def fake_remove(image, session):
+        warmup_calls.append((image.size, image.mode, session))
+        return image
+
+    monkeypatch.setattr(
+        background_removal,
+        "import_rembg",
+        lambda: (fake_remove, object()),
+    )
+    monkeypatch.setattr(
+        background_removal,
+        "get_rembg_session",
+        lambda: (session, False),
+    )
+
+    background_removal.initialize_background_removal()
+
+    assert warmup_calls == [((320, 320), "RGB", session)]

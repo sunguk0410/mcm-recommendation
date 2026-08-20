@@ -97,11 +97,30 @@ def get_rembg_session():
 
 
 def initialize_background_removal():
-    """Warm up rembg and its model session during application startup."""
+    """Load rembg and run one inference during application startup."""
     started_at = time.perf_counter()
     logger.info("Background removal startup initialization started")
-    import_rembg()
-    _, session_reused = get_rembg_session()
+    remover, _ = import_rembg()
+    session, session_reused = get_rembg_session()
+
+    warmup_started_at = time.perf_counter()
+    logger.info(
+        "Background removal inference warmup started. model=%s",
+        REMBG_MODEL_NAME,
+    )
+    warmup_image = Image.new("RGB", (320, 320), "white")
+    warmup_result = remover(warmup_image, session=session)
+    if isinstance(warmup_result, Image.Image):
+        warmup_result.load()
+    else:
+        with Image.open(io.BytesIO(warmup_result)) as warmup_output:
+            warmup_output.load()
+    logger.info(
+        "Background removal inference warmup completed. model=%s, elapsedMs=%.1f",
+        REMBG_MODEL_NAME,
+        (time.perf_counter() - warmup_started_at) * 1000,
+    )
+
     logger.info(
         "Background removal startup initialization completed. "
         "model=%s, sessionReused=%s, elapsedMs=%.1f",
