@@ -13,7 +13,10 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 
-logger = logging.getLogger(__name__)
+# Uvicorn only configures its own loggers at INFO level. Using a child of
+# ``uvicorn.error`` makes the timing records visible in container logs while
+# keeping the application's existing log format.
+logger = logging.getLogger("uvicorn.error.background_removal")
 
 DOWNLOAD_TIMEOUT_SECONDS = 10
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
@@ -209,9 +212,11 @@ def remove_background(
         return filename
     except Exception as error:
         logger.exception(
-            "Background removal failed. imageUrl=%s, filename=%s, error=%s",
+            "Background removal failed. imageUrl=%s, filename=%s, "
+            "elapsedMs=%.1f, error=%s",
             image_url,
             filename,
+            (time.perf_counter() - request_started_at) * 1000,
             error,
         )
         raise
