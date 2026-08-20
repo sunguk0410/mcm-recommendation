@@ -115,3 +115,74 @@ def test_recommend_does_not_filter_bags_by_gender():
     )
 
     assert [item["productId"] for item in recommendations] == [3, 2, 1]
+
+
+def test_recommend_prioritizes_product_100_only_on_cold_start():
+    recommender = RecRecInference.__new__(RecRecInference)
+    recommender.products = [
+        SimpleNamespace(product_id=1, category="BOTTOM", gender="FEMALE"),
+        SimpleNamespace(product_id=100, category="BOTTOM", gender="FEMALE"),
+        SimpleNamespace(product_id=105, category="BOTTOM", gender="FEMALE"),
+    ]
+    recommender._initial_preference_score = lambda product, scores: scores.get(
+        product.product_id,
+        0.0,
+    )
+
+    cold_start = recommender.recommend(
+        interactions=[],
+        category="BOTTOM",
+        gender="FEMALE",
+        top_k=2,
+    )
+    with_zone_history = recommender.recommend(
+        interactions=[],
+        zone_scores={1: 1.0, 100: 0.0},
+        category="BOTTOM",
+        gender="FEMALE",
+        top_k=2,
+    )
+
+    assert [item["productId"] for item in cold_start] == [100, 105]
+    assert [item["productId"] for item in with_zone_history] == [1, 100]
+
+
+def test_recommend_prioritizes_bag_products_in_configured_order():
+    recommender = RecRecInference.__new__(RecRecInference)
+    recommender.products = [
+        SimpleNamespace(product_id=53, category="BAG", gender="MALE"),
+        SimpleNamespace(product_id=4, category="BAG", gender="FEMALE"),
+        SimpleNamespace(product_id=62, category="BAG", gender="UNISEX"),
+        SimpleNamespace(product_id=44, category="BAG", gender="FEMALE"),
+        SimpleNamespace(product_id=75, category="BAG", gender="MALE"),
+        SimpleNamespace(product_id=63, category="BAG", gender="FEMALE"),
+    ]
+    recommender._initial_preference_score = lambda product, scores: 0.0
+
+    recommendations = recommender.recommend(
+        interactions=[],
+        category="BAG",
+        gender="FEMALE",
+        top_k=6,
+    )
+
+    assert [item["productId"] for item in recommendations] == [4, 44, 75, 62, 63, 53]
+
+
+def test_recommend_prioritizes_top_products_in_configured_order():
+    recommender = RecRecInference.__new__(RecRecInference)
+    recommender.products = [
+        SimpleNamespace(product_id=1, category="TOP", gender="FEMALE"),
+        SimpleNamespace(product_id=81, category="TOP", gender="FEMALE"),
+        SimpleNamespace(product_id=80, category="TOP", gender="FEMALE"),
+    ]
+    recommender._initial_preference_score = lambda product, scores: 0.0
+
+    recommendations = recommender.recommend(
+        interactions=[],
+        category="TOP",
+        gender="FEMALE",
+        top_k=3,
+    )
+
+    assert [item["productId"] for item in recommendations] == [80, 81, 1]
