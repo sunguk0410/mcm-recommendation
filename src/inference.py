@@ -26,11 +26,6 @@ COMPLEMENTARY_CATEGORY_BONUSES = {
 
 MAX_DIVERSE_PRODUCTS_PER_CATEGORY = 2
 DEFAULT_DIVERSITY_WINDOW = 5
-INITIAL_FEATURED_PRODUCTS = {
-    "BAG": [4, 44, 75, 62, 63, 53],
-    "BOTTOM": [100, 105],
-    "TOP": [80, 81],
-}
 CONTENT_STOP_WORDS = {
     "mcm", "x", "비세토스", "모노그램", "레더", "가죽", "코튼",
     "로고", "프린트", "백", "티셔츠", "셔츠", "팬츠", "블랙",
@@ -552,13 +547,6 @@ class RecRecInference:
 
         # Initial recommendations do not invoke RecRec.
         if not interactions:
-            is_cold_start = not zone_scores and not preference_product_ids
-            featured_ranks = {
-                product_id: rank
-                for rank, product_id in enumerate(
-                    INITIAL_FEATURED_PRODUCTS.get(category, [])
-                )
-            }
             recommendations = [
                 {
                     "productId": product.product_id,
@@ -567,15 +555,7 @@ class RecRecInference:
                 for product in candidates
             ]
             recommendations.sort(
-                key=lambda item: (
-                    0
-                    if is_cold_start
-                    and item["productId"] in featured_ranks
-                    else 1,
-                    featured_ranks.get(item["productId"], 0),
-                    -item["score"],
-                    item["productId"],
-                )
+                key=lambda item: (-item["score"], item["productId"])
             )
             return recommendations[:top_k]
 
