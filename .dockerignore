@@ -11,7 +11,7 @@ synthetic_interactions.jsonl
 synthetic_interactions_v2.jsonl
 
 checkpoints/*
-!checkpoints/recrec_v2_best.pt
+!checkpoints/recrec_best.pt
 
 src/train.py
 src/train_v2.py

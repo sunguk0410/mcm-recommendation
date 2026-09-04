@@ -24,16 +24,19 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push Docker image
+      - name: Build and push recommendation image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: mcm-recommendation
           IMAGE_TAG: latest
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build \
+            --platform linux/amd64 \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      - name: Deploy to EC2
+      - name: Deploy recommendation server
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -45,9 +48,12 @@ jobs:
             aws ecr get-login-password --region ap-northeast-2 \
               | docker login \
                 --username AWS \
-                --password-stdin ${{ secrets.ECR_REGISTRY }}
+                --password-stdin 210039344853.dkr.ecr.ap-northeast-2.amazonaws.com
 
-            docker compose pull
-            docker compose up -d
+            docker compose -f docker-compose.prod.yml pull recommendation
+
+            docker compose -f docker-compose.prod.yml up -d \
+              --force-recreate \
+              recommendation
 
             docker image prune -f
