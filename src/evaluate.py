@@ -1,8 +1,12 @@
+import argparse
+import json
+
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import create_datasets
-from recrec import RecRec
+from .dataset import create_datasets, load_products_from_excel
+from .product_features import build_product_feature_matrix
+from .recrec import RecRec
 
 
 # =========================================================
@@ -56,6 +60,7 @@ def evaluate(
     }
 
     total_samples = 0
+    reciprocal_rank_sum = 0.0
 
     for batch in dataloader:
 
@@ -167,6 +172,9 @@ def evaluate(
                         ).item()
                     )
 
+            if target_rank is not None:
+                reciprocal_rank_sum += 1.0 / target_rank
+
     # =====================================================
     # 평균
     # =====================================================
@@ -189,6 +197,10 @@ def evaluate(
             / total_samples
         )
 
+        metrics[f"Precision@{k}"] = hit_sums[k] / (total_samples * k)
+
+    metrics["MRR@10"] = reciprocal_rank_sum / total_samples
+
     return metrics
 
 
@@ -196,7 +208,16 @@ def evaluate(
 # Main
 # =========================================================
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", default=CHECKPOINT_PATH)
+    parser.add_argument("--output")
+    return parser.parse_args()
+
+
 def main():
+
+    args = parse_args()
 
     device = get_device()
 
@@ -245,13 +266,22 @@ def main():
     # -----------------------------------------
 
     checkpoint = torch.load(
-        CHECKPOINT_PATH,
+        args.checkpoint,
         map_location=device,
     )
 
     config = checkpoint[
         "model_config"
     ]
+
+    metadata_features = None
+    if config.get("use_content_features", False):
+        products = load_products_from_excel(CATALOG_PATH)
+        metadata_features = build_product_feature_matrix(
+            products,
+            mapper,
+            feature_dim=config["content_feature_dim"],
+        )
 
     # -----------------------------------------
     # Model 복원
@@ -317,6 +347,11 @@ def main():
                 "dropout"
             ]
         ),
+        recency_decay=config["recency_decay"],
+        action_weights=tuple(config["action_weights"]),
+        pooling_mode=config.get("pooling_mode", "action_recency"),
+        metadata_features=metadata_features,
+        content_weight=config.get("content_weight", 1.0),
     )
 
     model.load_state_dict(
@@ -361,6 +396,26 @@ def main():
     print(
         "================================="
     )
+
+    print(f"Precision@1  : {metrics['Precision@1']:.4f}")
+    print(f"Precision@5  : {metrics['Precision@5']:.4f}")
+    print(f"Precision@10 : {metrics['Precision@10']:.4f}")
+    print(f"MRR@10       : {metrics['MRR@10']:.4f}")
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as output_file:
+            json.dump(
+                {
+                    "checkpoint": args.checkpoint,
+                    "epoch": checkpoint["epoch"],
+                    "val_loss": checkpoint["val_loss"],
+                    "model_config": config,
+                    "metrics": metrics,
+                },
+                output_file,
+                ensure_ascii=False,
+                indent=2,
+            )
 
     print(
         f"HR@1    : "

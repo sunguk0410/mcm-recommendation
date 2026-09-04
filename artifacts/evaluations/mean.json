@@ -1,0 +1,42 @@
+{
+  "checkpoint": "checkpoints\\ablations\\mean.pt",
+  "epoch": 10,
+  "val_loss": 4.055987594520225,
+  "model_config": {
+    "num_products": 135,
+    "embedding_dim": 128,
+    "hidden_dim": 256,
+    "num_behavior_types": 6,
+    "recency_decay": 0.25,
+    "action_weights": [
+      0.0,
+      1.0,
+      1.5,
+      0.5,
+      2.0,
+      0.5
+    ],
+    "pooling_mode": "mean",
+    "use_content_features": false,
+    "content_feature_dim": 0,
+    "content_weight": 1.0,
+    "num_refinement_steps": 6,
+    "num_inner_steps": 3,
+    "recursive_layers": 3,
+    "update_scale": 0.1,
+    "temperature": 0.07,
+    "dropout": 0.1
+  },
+  "metrics": {
+    "HR@1": 0.026098263211665272,
+    "NDCG@1": 0.026098263211665272,
+    "Precision@1": 0.026098263211665272,
+    "HR@5": 0.1495309742732423,
+    "NDCG@5": 0.08574325659197488,
+    "Precision@5": 0.029906194854648464,
+    "HR@10": 0.2946967586142844,
+    "NDCG@10": 0.1321100553706611,
+    "Precision@10": 0.02946967586142844,
+    "MRR@10": 0.08391701716444025
+  }
+}

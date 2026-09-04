@@ -28,3 +28,7 @@ logs/
 
 # Generated interaction datasets
 synthetic_interactions*.jsonl
+
+# Experimental model checkpoints
+checkpoints/ablations/
+checkpoints/experiments/

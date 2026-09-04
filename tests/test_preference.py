@@ -71,7 +71,7 @@ def test_content_bonus_recognizes_collection_without_double_counting_wishlist():
 
 def test_wishlist_products_are_treated_as_seen_candidates():
     excluded = RecRecInference._excluded_product_ids(
-        [{"productId": 1, "interactionType": "FITTING"}],
+        [{"productId": 1, "interactionType": "FITTING_ADD"}],
         [2],
         True,
     )

@@ -100,7 +100,8 @@ class EvaluationZoneInteractionRequest(ZoneInteractionRequest):
 class EvaluationInteractionRequest(InteractionRequest):
     interactionType: Literal[
         "PRODUCT_SELECT",
-        "FITTING",
+        "FITTING_ADD",
+        "FITTING_REMOVE",
         "WISHLIST_ADD",
         "WISHLIST_REMOVE",
     ]

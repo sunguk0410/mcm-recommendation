@@ -12,7 +12,7 @@ ENV U2NET_HOME=/root/.u2net
 RUN python -c "from rembg import new_session; new_session('u2net')"
 
 COPY src ./src
-COPY checkpoints/recrec_v2_best.pt ./checkpoints/recrec_v2_best.pt
+COPY checkpoints/recrec_best.pt ./checkpoints/recrec_best.pt
 COPY MCM_제품리스트_통합_추천모델용.xlsx .
 
 EXPOSE 8000

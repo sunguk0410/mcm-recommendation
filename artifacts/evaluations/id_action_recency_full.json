@@ -1,0 +1,42 @@
+{
+  "checkpoint": "checkpoints\\recrec_best.pt",
+  "epoch": 30,
+  "val_loss": 4.036999812833405,
+  "model_config": {
+    "num_products": 135,
+    "embedding_dim": 128,
+    "hidden_dim": 256,
+    "num_behavior_types": 6,
+    "recency_decay": 0.25,
+    "action_weights": [
+      0.0,
+      1.0,
+      1.5,
+      0.5,
+      2.0,
+      0.5
+    ],
+    "pooling_mode": "action_recency",
+    "use_content_features": false,
+    "content_feature_dim": 0,
+    "content_weight": 1.0,
+    "num_refinement_steps": 6,
+    "num_inner_steps": 3,
+    "recursive_layers": 3,
+    "update_scale": 0.1,
+    "temperature": 0.07,
+    "dropout": 0.1
+  },
+  "metrics": {
+    "HR@1": 0.03157796972229962,
+    "NDCG@1": 0.03157796972229962,
+    "Precision@1": 0.03157796972229962,
+    "HR@5": 0.1616049038729451,
+    "NDCG@5": 0.09552241923840928,
+    "Precision@5": 0.032320980774589024,
+    "HR@10": 0.2974830500603696,
+    "NDCG@10": 0.13895845833304046,
+    "Precision@10": 0.029748305006036965,
+    "MRR@10": 0.09167978729834429
+  }
+}

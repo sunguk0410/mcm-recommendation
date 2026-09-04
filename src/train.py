@@ -1,3 +1,4 @@
+import argparse
 import os
 import random
 from pathlib import Path
@@ -6,8 +7,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import create_datasets
-from recrec import RecRec, recrec_loss
+from .dataset import create_datasets, load_products_from_excel
+from .product_features import build_product_feature_matrix
+from .recrec import RecRec, recrec_loss
 
 
 # =========================================================
@@ -16,13 +18,13 @@ from recrec import RecRec, recrec_loss
 
 SEED = 42
 
-JSONL_PATH = "synthetic_interactions_v2.jsonl"
+JSONL_PATH = "synthetic_interactions.jsonl"
 CATALOG_PATH = "MCM_제품리스트_통합_추천모델용.xlsx"
 
 CHECKPOINT_DIR = "checkpoints"
 BEST_MODEL_PATH = os.path.join(
     CHECKPOINT_DIR,
-    "recrec_v2_best.pt",
+    "recrec_best.pt",
 )
 
 # Dataset
@@ -298,6 +300,8 @@ def save_checkpoint(
     path,
 ):
 
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
     checkpoint = {
 
         "epoch":
@@ -324,7 +328,25 @@ def save_checkpoint(
                 HIDDEN_DIM,
 
             "num_behavior_types":
-                5,
+                6,
+
+            "recency_decay":
+                model.recency_decay,
+
+            "action_weights":
+                model.action_weights.detach().cpu().tolist(),
+
+            "pooling_mode":
+                model.pooling_mode,
+
+            "use_content_features":
+                model.use_content_features,
+
+            "content_feature_dim":
+                0 if model.metadata_features is None else model.metadata_features.shape[1],
+
+            "content_weight":
+                model.content_weight,
 
             "num_refinement_steps":
                 NUM_REFINEMENT_STEPS,
@@ -363,7 +385,22 @@ def save_checkpoint(
 # Main
 # =========================================================
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--pooling-mode",
+        choices=["mean", "action", "recency", "action_recency"],
+        default="action_recency",
+    )
+    parser.add_argument("--content", action="store_true")
+    parser.add_argument("--checkpoint", default=BEST_MODEL_PATH)
+    parser.add_argument("--epochs", type=int, default=NUM_EPOCHS)
+    return parser.parse_args()
+
+
 def main():
+
+    args = parse_args()
 
     # -----------------------------------------
     # Seed
@@ -460,6 +497,11 @@ def main():
     # test는 나중 evaluate.py에서 사용
     _ = test_dataset
 
+    metadata_features = None
+    if args.content:
+        products = load_products_from_excel(CATALOG_PATH)
+        metadata_features = build_product_feature_matrix(products, mapper)
+
     # -----------------------------------------
     # Model
     # -----------------------------------------
@@ -477,7 +519,7 @@ def main():
             HIDDEN_DIM
         ),
 
-        num_behavior_types=5,
+        num_behavior_types=6,
 
         num_refinement_steps=(
             NUM_REFINEMENT_STEPS
@@ -502,6 +544,8 @@ def main():
         dropout=(
             DROPOUT
         ),
+        pooling_mode=args.pooling_mode,
+        metadata_features=metadata_features,
     )
 
     model = model.to(
@@ -572,7 +616,7 @@ def main():
 
     for epoch in range(
         1,
-        NUM_EPOCHS + 1,
+        args.epochs + 1,
     ):
 
         print(
@@ -582,7 +626,7 @@ def main():
         print(
             f"Epoch "
             f"{epoch}"
-            f"/{NUM_EPOCHS}"
+            f"/{args.epochs}"
         )
 
         print(
@@ -665,12 +709,12 @@ def main():
                 epoch=epoch,
                 val_loss=val_loss,
                 mapper=mapper,
-                path=BEST_MODEL_PATH,
+                path=args.checkpoint,
             )
 
             print(
                 f"Best model saved -> "
-                f"{BEST_MODEL_PATH}"
+                f"{args.checkpoint}"
             )
 
         else:
@@ -713,7 +757,7 @@ def main():
 
     print(
         f"Best model: "
-        f"{BEST_MODEL_PATH}"
+        f"{args.checkpoint}"
     )
 
     print(

@@ -32,7 +32,7 @@ class StyleIdentityTest(unittest.TestCase):
             "color": "Black",
             "zone": "TRAVEL",
             "directInterestScore": 7.5,
-            "evidence": ["ONLINE_WISHLIST", "FITTING"],
+            "evidence": ["ONLINE_WISHLIST", "FITTING_ADD"],
         }]
 
     def test_returns_valid_generated_korean_noun_phrase(self):

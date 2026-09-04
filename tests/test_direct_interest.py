@@ -19,10 +19,10 @@ class DirectInterestTest(unittest.TestCase):
             online_wishlist_product_ids=[70, 50],
             interactions=[
                 {"productId": 70, "interactionType": "PRODUCT_SELECT"},
-                {"productId": 70, "interactionType": "FITTING"},
-                {"productId": 50, "interactionType": "FITTING"},
-                {"productId": 91, "interactionType": "FITTING"},
-                {"productId": 70, "interactionType": "FITTING"},
+                {"productId": 70, "interactionType": "FITTING_ADD"},
+                {"productId": 50, "interactionType": "FITTING_ADD"},
+                {"productId": 91, "interactionType": "FITTING_ADD"},
+                {"productId": 70, "interactionType": "FITTING_ADD"},
             ],
         )
 
@@ -36,14 +36,14 @@ class DirectInterestTest(unittest.TestCase):
         once = score_direct_interest(
             self.products,
             [],
-            [{"productId": 70, "interactionType": "FITTING"}],
+            [{"productId": 70, "interactionType": "FITTING_ADD"}],
         )[0]["directInterestScore"]
         twice = score_direct_interest(
             self.products,
             [],
             [
-                {"productId": 70, "interactionType": "FITTING"},
-                {"productId": 70, "interactionType": "FITTING"},
+                {"productId": 70, "interactionType": "FITTING_ADD"},
+                {"productId": 70, "interactionType": "FITTING_ADD"},
             ],
         )[0]["directInterestScore"]
 
@@ -78,7 +78,7 @@ class DirectInterestTest(unittest.TestCase):
             self.products,
             [],
             [
-                {"productId": 999, "interactionType": "FITTING"},
+                {"productId": 999, "interactionType": "FITTING_ADD"},
                 {"productId": 70, "interactionType": "UNKNOWN"},
             ],
         )

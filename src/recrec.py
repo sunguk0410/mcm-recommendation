@@ -94,9 +94,10 @@ class RecRec(nn.Module):
     behavior:
         0 = PAD
         1 = PRODUCT_SELECT
-        2 = FITTING
-        3 = WISHLIST_ADD
-        4 = WISHLIST_REMOVE
+        2 = FITTING_ADD
+        3 = FITTING_REMOVE
+        4 = WISHLIST_ADD
+        5 = WISHLIST_REMOVE
     """
 
     def __init__(
@@ -104,7 +105,7 @@ class RecRec(nn.Module):
         num_products: int,
         embedding_dim: int = 128,
         hidden_dim: int = 256,
-        num_behavior_types: int = 5,
+        num_behavior_types: int = 6,
 
         # 논문의 outer refinement T
         num_refinement_steps: int = 6,
@@ -117,6 +118,11 @@ class RecRec(nn.Module):
         update_scale: float = 0.1,
         temperature: float = 0.07,
         dropout: float = 0.1,
+        recency_decay: float = 0.25,
+        action_weights: tuple[float, ...] = (0.0, 1.0, 1.5, 0.5, 2.0, 0.5),
+        pooling_mode: str = "action_recency",
+        metadata_features: torch.Tensor | None = None,
+        content_weight: float = 1.0,
     ):
         super().__init__()
 
@@ -127,6 +133,8 @@ class RecRec(nn.Module):
         self.embedding_dim = (
             embedding_dim
         )
+
+        self.num_behavior_types = num_behavior_types
 
         self.num_refinement_steps = (
             num_refinement_steps
@@ -142,6 +150,23 @@ class RecRec(nn.Module):
 
         self.temperature = (
             temperature
+        )
+
+        self.recency_decay = float(recency_decay)
+        self.pooling_mode = pooling_mode
+        self.content_weight = float(content_weight)
+
+        if pooling_mode not in {"mean", "action", "recency", "action_recency"}:
+            raise ValueError(f"Unknown pooling_mode: {pooling_mode}")
+
+        if len(action_weights) != num_behavior_types:
+            raise ValueError(
+                "action_weights length must match num_behavior_types"
+            )
+
+        self.register_buffer(
+            "action_weights",
+            torch.tensor(action_weights, dtype=torch.float32),
         )
 
         # =====================================================
@@ -161,14 +186,28 @@ class RecRec(nn.Module):
             )
         )
 
+        self.use_content_features = metadata_features is not None
+        if self.use_content_features:
+            if metadata_features.shape[0] != num_products:
+                raise ValueError("metadata feature rows must match num_products")
+            self.register_buffer("metadata_features", metadata_features.float())
+            self.content_projection = nn.Linear(
+                metadata_features.shape[1], embedding_dim, bias=False
+            )
+            self.product_fusion_norm = nn.LayerNorm(embedding_dim)
+        else:
+            self.register_buffer("metadata_features", None)
+            self.content_projection = None
+            self.product_fusion_norm = nn.Identity()
+
         # =====================================================
         # Behavior Embedding
         # =====================================================
         #
         # MCM-specific extension
         #
-        # SELECT / FITTING /
-        # WISHLIST_ADD / REMOVE
+        # SELECT / FITTING_ADD / FITTING_REMOVE /
+        # WISHLIST_ADD / WISHLIST_REMOVE
         # =====================================================
 
         self.behavior_embedding = (
@@ -291,11 +330,7 @@ class RecRec(nn.Module):
             [batch, seq_len, embedding_dim]
         """
 
-        product_embeddings = (
-            self.product_embedding(
-                product_ids
-            )
-        )
+        product_embeddings = self.encode_products(product_ids)
 
         behavior_embeddings = (
             self.behavior_embedding(
@@ -322,6 +357,19 @@ class RecRec(nn.Module):
         )
 
         return interaction_embeddings
+
+    def encode_products(self, product_ids: torch.Tensor) -> torch.Tensor:
+        """Encode history and candidate products in the same latent space."""
+        product_embeddings = self.product_embedding(product_ids)
+        if not self.use_content_features:
+            return product_embeddings
+
+        content_embeddings = self.content_projection(
+            self.metadata_features[product_ids]
+        )
+        return self.product_fusion_norm(
+            product_embeddings + self.content_weight * content_embeddings
+        )
 
     # =========================================================
     # Static Context x
@@ -377,6 +425,40 @@ class RecRec(nn.Module):
         )
 
         return context
+
+    def weighted_pooling(
+        self,
+        embeddings: torch.Tensor,
+        behavior_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pool interaction evidence by action strength and recency."""
+
+        mask = attention_mask.float()
+        valid_positions = attention_mask.long().cumsum(dim=1) - 1
+        sequence_lengths = attention_mask.long().sum(dim=1, keepdim=True)
+        distance_from_latest = (
+            sequence_lengths - 1 - valid_positions
+        ).clamp(min=0).float()
+
+        recency_weights = torch.exp(
+            -self.recency_decay * distance_from_latest
+        )
+
+        if self.pooling_mode in {"action", "action_recency"}:
+            behavior_weights = self.action_weights[behavior_ids]
+        else:
+            behavior_weights = torch.ones_like(mask)
+
+        if self.pooling_mode not in {"recency", "action_recency"}:
+            recency_weights = torch.ones_like(mask)
+        weights = behavior_weights * recency_weights * mask
+
+        weighted_sum = (
+            embeddings * weights.unsqueeze(-1)
+        ).sum(dim=1)
+        weight_sum = weights.sum(dim=1, keepdim=True).clamp(min=1e-8)
+        return weighted_sum / weight_sum
 
     # =========================================================
     # Recursive Refinement
@@ -566,9 +648,11 @@ class RecRec(nn.Module):
         preference와 모든 상품 embedding 간 dot-product.
         """
 
-        product_embeddings = (
-            self.product_embedding.weight
+        candidate_ids = torch.arange(
+            self.num_products,
+            device=preference.device,
         )
+        product_embeddings = self.encode_products(candidate_ids)
 
         # normalize해서 cosine-like score
         preference = F.normalize(
@@ -641,8 +725,9 @@ class RecRec(nn.Module):
         # -----------------------------------------
 
         context = (
-            self.masked_mean_pooling(
+            self.weighted_pooling(
                 interaction_embeddings,
+                behavior_ids,
                 attention_mask,
             )
         )

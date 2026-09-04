@@ -1,178 +1,550 @@
 import json
 import math
-from dataclasses import dataclass, asdict
+import random
+from collections import Counter, defaultdict
 
 import numpy as np
+import pandas as pd
 
-from persona import (
-    PERSONAS,
-    BEHAVIOR_PROFILES,
-    Persona,
+
+# =========================================================
+# Config
+# =========================================================
+
+SEED = 42
+
+CATALOG_PATH = (
+    "MCM_제품리스트_통합_추천모델용.xlsx"
 )
 
-from affinity import (
-    Product,
-    load_products_from_excel,
-    filter_products_by_gender,
-    create_hidden_preference,
-    calculate_normalized_affinities,
+OUTPUT_PATH = (
+    "synthetic_interactions.jsonl"
 )
 
-
-# =========================================================
-# Interaction Types
-# =========================================================
-
-PRODUCT_SELECT = "PRODUCT_SELECT"
-FITTING = "FITTING"
-WISHLIST_ADD = "WISHLIST_ADD"
-WISHLIST_REMOVE = "WISHLIST_REMOVE"
-
-
-@dataclass
-class Interaction:
-    productId: int
-    interactionType: str
-    sequenceNo: int
-
-
-@dataclass
-class SyntheticSession:
-    sessionId: int
-    interactions: list[Interaction]
+NUM_SESSIONS = 9000
 
 
 # =========================================================
-# Math
+# Behavior Profiles
 # =========================================================
 
-def clip_probability(
-    probability: float,
-) -> float:
+BEHAVIOR_PROFILES = {
 
-    return float(
-        np.clip(
-            probability,
-            0.01,
-            0.99,
-        )
-    )
+    "FASHION_EXPLORER": {
+        "lambda_products": 13,
+        "min_products": 8,
+        "max_products": 20,
+
+        "fitting_base": 0.45,
+        "wishlist_add_base": 0.28,
+        "wishlist_remove_base": 0.12,
+    },
+
+    "DECISIVE_BUYER": {
+        "lambda_products": 8,
+        "min_products": 5,
+        "max_products": 14,
+
+        "fitting_base": 0.78,
+        "wishlist_add_base": 0.58,
+        "wishlist_remove_base": 0.06,
+    },
+
+    "BROAD_EXPLORER": {
+        "lambda_products": 18,
+        "min_products": 10,
+        "max_products": 28,
+
+        "fitting_base": 0.18,
+        "wishlist_add_base": 0.07,
+        "wishlist_remove_base": 0.24,
+    },
+}
 
 
-def logit(
-    probability: float,
-) -> float:
+# =========================================================
+# Zone Profiles
+# =========================================================
 
-    probability = (
-        clip_probability(
-            probability
-        )
-    )
+ZONE_PROFILES = {
 
-    return math.log(
-        probability
-        / (1.0 - probability)
-    )
+    "CLASSIC": {
+        "CLASSIC": 0.65,
+        "NEW": 0.25,
+        "TRAVEL": 0.10,
+    },
+
+    "NEW": {
+        "CLASSIC": 0.20,
+        "NEW": 0.65,
+        "TRAVEL": 0.15,
+    },
+
+    "TRAVEL": {
+        "CLASSIC": 0.15,
+        "NEW": 0.20,
+        "TRAVEL": 0.65,
+    },
+}
 
 
-def sigmoid(
-    value: float,
-) -> float:
+# =========================================================
+# Persona
+# =========================================================
+
+PERSONAS = [
+
+    ("P1", "FASHION_EXPLORER", "CLASSIC"),
+    ("P2", "FASHION_EXPLORER", "NEW"),
+    ("P3", "FASHION_EXPLORER", "TRAVEL"),
+
+    ("P4", "DECISIVE_BUYER", "CLASSIC"),
+    ("P5", "DECISIVE_BUYER", "NEW"),
+    ("P6", "DECISIVE_BUYER", "TRAVEL"),
+
+    ("P7", "BROAD_EXPLORER", "CLASSIC"),
+    ("P8", "BROAD_EXPLORER", "NEW"),
+    ("P9", "BROAD_EXPLORER", "TRAVEL"),
+]
+
+
+# =========================================================
+# Preference Update Strength
+# =========================================================
+#
+# 여기서 동적 선호 업데이트의 핵심이 발생한다.
+#
+# SELECT
+#   → 약한 관심
+#
+# FITTING_ADD / FITTING_REMOVE
+#   → 중간 수준 긍정
+#
+# WISHLIST_ADD
+#   → 강한 긍정
+#
+# WISHLIST_REMOVE
+#   → 부정 preference correction
+#
+# =========================================================
+
+ACTION_STRENGTH = {
+
+    "PRODUCT_SELECT": 0.15,
+
+    "FITTING_ADD": 0.35,
+
+    "FITTING_REMOVE": -0.20,
+
+    "WISHLIST_ADD": 0.60,
+
+    "WISHLIST_REMOVE": -0.70,
+}
+
+
+# =========================================================
+# Preference Memory
+# =========================================================
+
+PREFERENCE_DECAY = 0.97
+
+MAX_DYNAMIC_PREFERENCE = 3.0
+
+MIN_DYNAMIC_PREFERENCE = -3.0
+
+
+# =========================================================
+# Sampling
+# =========================================================
+
+SAMPLING_TEMPERATURE = 0.35
+
+
+# =========================================================
+# Helpers
+# =========================================================
+
+def sigmoid(x):
 
     return (
         1.0
-        / (
-            1.0
-            + math.exp(-value)
-        )
+        / (1.0 + math.exp(-x))
     )
+
+
+def logit(p):
+
+    p = min(
+        max(p, 1e-6),
+        1 - 1e-6,
+    )
+
+    return math.log(
+        p / (1 - p)
+    )
+
+
+def softmax(values, temperature=1.0):
+
+    values = np.asarray(
+        values,
+        dtype=np.float64,
+    )
+
+    values = (
+        values
+        / temperature
+    )
+
+    values = (
+        values
+        - np.max(values)
+    )
+
+    exp_values = np.exp(
+        values
+    )
+
+    return (
+        exp_values
+        / exp_values.sum()
+    )
+
+
+def safe_str(value):
+
+    if pd.isna(value):
+        return None
+
+    value = str(value).strip()
+
+    if not value:
+        return None
+
+    return value
 
 
 # =========================================================
-# Session-specific behavior tendency
+# Load Products
 # =========================================================
 
-def perturb_probability(
-    base: float,
-    rng: np.random.Generator,
-    sigma: float = 0.30,
-) -> float:
-    """
-    probability 자체에 noise를 더하는 것보다
-    logit 공간에서 noise를 추가하는 것이 안정적이다.
-    """
+def load_products():
 
-    noisy_logit = (
-        logit(base)
-        + rng.normal(
-            0.0,
-            sigma,
-        )
+    df = pd.read_excel(
+        CATALOG_PATH,
+        sheet_name="Products",
     )
 
-    return clip_probability(
-        sigmoid(
-            noisy_logit
-        )
-    )
+    products = []
 
+    for _, row in df.iterrows():
 
-def behavior_probability(
-    base: float,
-    affinity: float,
-    affinity_strength: float,
-    extra_bias: float = 0.0,
-) -> float:
+        products.append({
 
-    value = (
-        logit(base)
+            "productId": int(
+                row["productId"]
+            ),
 
-        + affinity_strength
-        * (
-            affinity - 0.5
-        )
+            "productCode": safe_str(
+                row["productCode"]
+            ),
 
-        + extra_bias
-    )
+            "name": safe_str(
+                row["name"]
+            ),
 
-    return clip_probability(
-        sigmoid(value)
-    )
+            "gender": safe_str(
+                row["gender"]
+            ),
+
+            "category": safe_str(
+                row["category"]
+            ),
+
+            "subCategory": safe_str(
+                row["subCategory"]
+            ),
+
+            "zone": safe_str(
+                row["zone"]
+            ),
+
+            "color": safe_str(
+                row["color"]
+            ),
+        })
+
+    return products
 
 
 # =========================================================
-# Number of Products
+# Hidden Base Preference
 # =========================================================
 
-def sample_num_products(
-    persona: Persona,
-    available_products: int,
-    rng: np.random.Generator,
-) -> int:
+def create_base_preferences(
+    products,
+    zone_orientation,
+):
 
-    profile = (
-        BEHAVIOR_PROFILES[
-            persona.behavior_type
+    categories = sorted({
+        product["category"]
+        for product in products
+        if product["category"]
+    })
+
+    category_values = np.random.dirichlet(
+        np.ones(
+            len(categories)
+        ) * 0.7
+    )
+
+    category_pref = {
+        category: float(value)
+        for category, value
+        in zip(
+            categories,
+            category_values,
+        )
+    }
+
+    subcategory_pref = {}
+
+    for category in categories:
+
+        subcategories = sorted({
+
+            product["subCategory"]
+
+            for product in products
+
+            if (
+                product["category"]
+                == category
+                and product["subCategory"]
+            )
+        })
+
+        if not subcategories:
+            continue
+
+        values = np.random.dirichlet(
+            np.ones(
+                len(subcategories)
+            ) * 0.6
+        )
+
+        for subcategory, value in zip(
+            subcategories,
+            values,
+        ):
+
+            subcategory_pref[
+                (
+                    category,
+                    subcategory,
+                )
+            ] = float(value)
+
+    zone_pref = dict(
+        ZONE_PROFILES[
+            zone_orientation
         ]
     )
 
-    count = int(
-        rng.poisson(
-            profile.lambda_products
+    return (
+        category_pref,
+        subcategory_pref,
+        zone_pref,
+    )
+
+
+# =========================================================
+# Dynamic Preference State
+# =========================================================
+
+def create_dynamic_state():
+
+    return {
+        "category": defaultdict(float),
+        "subcategory": defaultdict(float),
+        "zone": defaultdict(float),
+    }
+
+
+def decay_dynamic_state(
+    dynamic_state,
+):
+
+    for state_name in (
+        "category",
+        "subcategory",
+        "zone",
+    ):
+
+        state = dynamic_state[
+            state_name
+        ]
+
+        for key in list(
+            state.keys()
+        ):
+
+            state[key] *= (
+                PREFERENCE_DECAY
+            )
+
+
+def clamp(value):
+
+    return max(
+        MIN_DYNAMIC_PREFERENCE,
+        min(
+            MAX_DYNAMIC_PREFERENCE,
+            value,
+        ),
+    )
+
+
+# =========================================================
+# Product Scoring
+# =========================================================
+
+def calculate_base_score(
+    product,
+    category_pref,
+    subcategory_pref,
+    zone_pref,
+):
+
+    zone_score = zone_pref.get(
+        product["zone"],
+        0.0,
+    )
+
+    category_score = (
+        category_pref.get(
+            product["category"],
+            0.0,
         )
     )
 
-    count = int(
-        np.clip(
-            count,
-            profile.min_products,
-            profile.max_products,
+    subcategory = product[
+        "subCategory"
+    ]
+
+    if subcategory:
+
+        subcategory_score = (
+            subcategory_pref.get(
+                (
+                    product["category"],
+                    subcategory,
+                ),
+                0.0,
+            )
+        )
+
+        score = (
+            0.45 * zone_score
+            + 0.35 * category_score
+            + 0.20 * subcategory_score
+        )
+
+    else:
+
+        # subCategory가 없으면
+        # zone/category weight 재정규화
+        score = (
+            (0.45 / 0.80)
+            * zone_score
+
+            + (0.35 / 0.80)
+            * category_score
+        )
+
+    return score
+
+
+def calculate_dynamic_score(
+    product,
+    dynamic_state,
+):
+
+    category_score = (
+        dynamic_state[
+            "category"
+        ].get(
+            product["category"],
+            0.0,
         )
     )
 
-    return min(
-        count,
-        available_products,
+    zone_score = (
+        dynamic_state[
+            "zone"
+        ].get(
+            product["zone"],
+            0.0,
+        )
+    )
+
+    subcategory_score = 0.0
+
+    if product["subCategory"]:
+
+        subcategory_score = (
+            dynamic_state[
+                "subcategory"
+            ].get(
+                (
+                    product["category"],
+                    product["subCategory"],
+                ),
+                0.0,
+            )
+        )
+
+    return (
+        0.40 * category_score
+        + 0.25 * zone_score
+        + 0.35 * subcategory_score
+    )
+
+
+def calculate_product_score(
+    product,
+    category_pref,
+    subcategory_pref,
+    zone_pref,
+    dynamic_state,
+):
+
+    base_score = (
+        calculate_base_score(
+            product=product,
+            category_pref=category_pref,
+            subcategory_pref=(
+                subcategory_pref
+            ),
+            zone_pref=zone_pref,
+        )
+    )
+
+    dynamic_score = (
+        calculate_dynamic_score(
+            product=product,
+            dynamic_state=(
+                dynamic_state
+            ),
+        )
+    )
+
+    # base preference가 여전히 주축이지만
+    # 행동을 통해 형성된 preference도
+    # 다음 상품 선택에 직접 영향
+    return (
+        base_score
+        + 0.35 * dynamic_score
     )
 
 
@@ -180,452 +552,565 @@ def sample_num_products(
 # Product Sampling
 # =========================================================
 
-def sample_products(
-    products: list[Product],
-    affinities: dict[int, float],
-    count: int,
-    rng: np.random.Generator,
-    temperature: float = 0.35,
-) -> list[Product]:
+def sample_next_product(
+    candidates,
+    category_pref,
+    subcategory_pref,
+    zone_pref,
+    dynamic_state,
+):
 
-    if not products:
-        return []
+    scores = []
 
-    count = min(
-        count,
-        len(products),
+    for product in candidates:
+
+        score = (
+            calculate_product_score(
+                product=product,
+                category_pref=category_pref,
+                subcategory_pref=(
+                    subcategory_pref
+                ),
+                zone_pref=zone_pref,
+                dynamic_state=(
+                    dynamic_state
+                ),
+            )
+        )
+
+        scores.append(
+            score
+        )
+
+    # min-max normalization
+    minimum = min(
+        scores
     )
 
-    scores = np.array(
-        [
-            affinities[
-                product.product_id
-            ]
-
-            for product
-            in products
-        ],
-        dtype=np.float64,
+    maximum = max(
+        scores
     )
 
-    # Softmax sampling
-    logits = (
-        scores / temperature
+    if maximum > minimum:
+
+        normalized = [
+            (
+                score
+                - minimum
+            )
+            / (
+                maximum
+                - minimum
+            )
+            for score in scores
+        ]
+
+    else:
+
+        normalized = [
+            0.5
+            for _ in scores
+        ]
+
+    probabilities = softmax(
+        normalized,
+        temperature=(
+            SAMPLING_TEMPERATURE
+        ),
     )
 
-    # numerical stability
-    logits = (
-        logits
-        - logits.max()
-    )
-
-    probabilities = np.exp(
-        logits
-    )
-
-    probabilities = (
-        probabilities
-        / probabilities.sum()
-    )
-
-    indices = rng.choice(
-        len(products),
-        size=count,
-        replace=False,
+    index = np.random.choice(
+        len(candidates),
         p=probabilities,
     )
 
-    return [
-        products[index]
-        for index
-        in indices
-    ]
+    return (
+        candidates[index],
+        normalized[index],
+    )
 
 
 # =========================================================
-# Generate One Session
+# Behavior Probability
 # =========================================================
 
-def generate_session(
-    session_id: int,
-    persona: Persona,
-    all_products: list[Product],
-    rng: np.random.Generator,
-) -> SyntheticSession:
+def perturb_probability(
+    probability,
+):
 
-    profile = (
-        BEHAVIOR_PROFILES[
-            persona.behavior_type
+    perturbed_logit = (
+        logit(probability)
+        + np.random.normal(
+            0.0,
+            0.30,
+        )
+    )
+
+    return sigmoid(
+        perturbed_logit
+    )
+
+
+def generate_actions(
+    affinity,
+    behavior_profile,
+):
+
+    fitting_base = perturb_probability(
+        behavior_profile[
+            "fitting_base"
         ]
     )
 
-    # -----------------------------------------
-    # 1. Gender
-    #
-    # Persona의 일부가 아님.
-    # AR session의 외부 조건이라고 본다.
-    # -----------------------------------------
+    wishlist_base = perturb_probability(
+        behavior_profile[
+            "wishlist_add_base"
+        ]
+    )
 
-    session_gender = rng.choice(
+    remove_base = perturb_probability(
+        behavior_profile[
+            "wishlist_remove_base"
+        ]
+    )
+
+    fitting_probability = sigmoid(
+        logit(fitting_base)
+        + 2.0 * (
+            affinity - 0.5
+        )
+    )
+
+    fitted = (
+        random.random()
+        < fitting_probability
+    )
+
+    fitting_removed = False
+
+    if fitted:
+
+        fitting_remove_probability = sigmoid(
+            logit(0.35)
+            - 1.5 * (
+                affinity - 0.5
+            )
+        )
+
+        fitting_removed = (
+            random.random()
+            < fitting_remove_probability
+        )
+
+    wishlist_probability = sigmoid(
+        logit(wishlist_base)
+        + 2.5 * (
+            affinity - 0.5
+        )
+        + (
+            0.70
+            if fitted
+            else 0.0
+        )
+    )
+
+    wishlist_added = (
+        random.random()
+        < wishlist_probability
+    )
+
+    wishlist_removed = False
+
+    if wishlist_added:
+
+        remove_probability = sigmoid(
+            logit(remove_base)
+            - 2.0 * (
+                affinity - 0.5
+            )
+        )
+
+        wishlist_removed = (
+            random.random()
+            < remove_probability
+        )
+
+    actions = [
+        "PRODUCT_SELECT"
+    ]
+
+    if fitted:
+
+        actions.append(
+            "FITTING_ADD"
+        )
+
+    if wishlist_added:
+
+        actions.append(
+            "WISHLIST_ADD"
+        )
+
+    if wishlist_removed:
+
+        actions.append(
+            "WISHLIST_REMOVE"
+        )
+
+    if fitting_removed:
+
+        actions.append(
+            "FITTING_REMOVE"
+        )
+
+    return actions
+
+
+# =========================================================
+# Preference Update
+# =========================================================
+
+def update_preference(
+    dynamic_state,
+    product,
+    action,
+):
+
+    strength = (
+        ACTION_STRENGTH[
+            action
+        ]
+    )
+
+    # category
+    category = product[
+        "category"
+    ]
+
+    dynamic_state[
+        "category"
+    ][category] = clamp(
+
+        dynamic_state[
+            "category"
+        ][category]
+
+        + strength
+    )
+
+    # zone
+    zone = product[
+        "zone"
+    ]
+
+    dynamic_state[
+        "zone"
+    ][zone] = clamp(
+
+        dynamic_state[
+            "zone"
+        ][zone]
+
+        + 0.70 * strength
+    )
+
+    # subCategory
+    subcategory = product[
+        "subCategory"
+    ]
+
+    if subcategory:
+
+        key = (
+            category,
+            subcategory,
+        )
+
+        dynamic_state[
+            "subcategory"
+        ][key] = clamp(
+
+            dynamic_state[
+                "subcategory"
+            ][key]
+
+            + 1.20 * strength
+        )
+
+
+# =========================================================
+# Session Length
+# =========================================================
+
+def sample_num_products(
+    profile,
+):
+
+    count = np.random.poisson(
+        profile[
+            "lambda_products"
+        ]
+    )
+
+    return int(
+        max(
+            profile[
+                "min_products"
+            ],
+            min(
+                profile[
+                    "max_products"
+                ],
+                count,
+            ),
+        )
+    )
+
+
+# =========================================================
+# Generate Session
+# =========================================================
+
+def generate_session(
+    session_index,
+    products,
+):
+
+    (
+        persona_id,
+        behavior_type,
+        zone_orientation,
+    ) = random.choice(
+        PERSONAS
+    )
+
+    behavior_profile = (
+        BEHAVIOR_PROFILES[
+            behavior_type
+        ]
+    )
+
+    gender = random.choice(
         [
             "MALE",
             "FEMALE",
         ]
     )
 
-    candidate_products = (
-        filter_products_by_gender(
-            products=all_products,
-            gender=session_gender,
+    candidates = [
+
+        product
+
+        for product in products
+
+        if (
+            product["gender"]
+            == gender
+
+            or product["gender"]
+            == "UNISEX"
         )
+    ]
+
+    (
+        category_pref,
+        subcategory_pref,
+        zone_pref,
+    ) = create_base_preferences(
+        products=candidates,
+        zone_orientation=(
+            zone_orientation
+        ),
     )
 
-    if not candidate_products:
-        raise ValueError(
-            f"No products for gender: "
-            f"{session_gender}"
-        )
-
-    # -----------------------------------------
-    # 2. 개별 고객 행동 propensity
-    # -----------------------------------------
-
-    session_fitting_base = (
-        perturb_probability(
-            profile.fitting_base,
-            rng,
-        )
+    dynamic_state = (
+        create_dynamic_state()
     )
 
-    session_wishlist_base = (
-        perturb_probability(
-            profile.wishlist_add_base,
-            rng,
-        )
-    )
-
-    session_remove_base = (
-        perturb_probability(
-            profile.wishlist_remove_base,
-            rng,
-        )
-    )
-
-    # -----------------------------------------
-    # 3. Hidden preference
-    #
-    # 모델에는 제공되지 않음
-    # -----------------------------------------
-
-    hidden_preference = (
-        create_hidden_preference(
-            persona=persona,
-            products=candidate_products,
-            rng=rng,
-        )
-    )
-
-    # -----------------------------------------
-    # 4. 모든 후보 상품 affinity
-    # -----------------------------------------
-
-    affinities = (
-        calculate_normalized_affinities(
-            products=candidate_products,
-            preference=hidden_preference,
-        )
-    )
-
-    # -----------------------------------------
-    # 5. 세션 내 상품 수
-    # -----------------------------------------
-
-    product_count = (
+    num_products = (
         sample_num_products(
-            persona=persona,
-            available_products=len(
-                candidate_products
-            ),
-            rng=rng,
+            behavior_profile
         )
     )
 
-    # -----------------------------------------
-    # 6. 상품 선택
-    # -----------------------------------------
+    num_products = min(
+        num_products,
+        len(candidates),
+    )
 
-    selected_products = (
-        sample_products(
-            products=candidate_products,
-            affinities=affinities,
-            count=product_count,
-            rng=rng,
-        )
+    available_products = list(
+        candidates
     )
 
     interactions = []
 
     sequence_no = 1
 
-    # =========================================
-    # AR Interaction 생성
-    # =========================================
+    selected_product_ids = []
 
-    for product in selected_products:
+    # =====================================================
+    # 핵심:
+    # 상품 하나 선택 → 행동 → preference update
+    # → 그 다음 상품 선택
+    # =====================================================
 
-        affinity = (
-            affinities[
-                product.product_id
+    for _ in range(
+        num_products
+    ):
+
+        if not available_products:
+            break
+
+        # 이전 행동까지 반영된
+        # 현재 preference state로
+        # 다음 상품을 선택
+        (
+            product,
+            affinity,
+        ) = sample_next_product(
+
+            candidates=(
+                available_products
+            ),
+
+            category_pref=(
+                category_pref
+            ),
+
+            subcategory_pref=(
+                subcategory_pref
+            ),
+
+            zone_pref=(
+                zone_pref
+            ),
+
+            dynamic_state=(
+                dynamic_state
+            ),
+        )
+
+        selected_product_ids.append(
+            product[
+                "productId"
             ]
         )
 
-        # -------------------------------------
-        # PRODUCT_SELECT
-        #
-        # 선택된 상품은 항상 SELECT부터 시작
-        # -------------------------------------
+        # 같은 상품 중복 선택 방지
+        available_products = [
 
-        interactions.append(
-            Interaction(
-                productId=(
-                    product.product_id
-                ),
-                interactionType=(
-                    PRODUCT_SELECT
-                ),
-                sequenceNo=sequence_no,
+            candidate
+
+            for candidate
+            in available_products
+
+            if (
+                candidate[
+                    "productId"
+                ]
+                != product[
+                    "productId"
+                ]
             )
+        ]
+
+        actions = generate_actions(
+            affinity=affinity,
+            behavior_profile=(
+                behavior_profile
+            ),
         )
 
-        sequence_no += 1
+        # ---------------------------------------------
+        # 해당 상품에 대한 모든 행동 기록
+        # ---------------------------------------------
 
-        # -------------------------------------
-        # FITTING
-        # -------------------------------------
+        for action in actions:
 
-        p_fitting = (
-            behavior_probability(
-                base=(
-                    session_fitting_base
+            interactions.append({
+
+                "productId": (
+                    product[
+                        "productId"
+                    ]
                 ),
-                affinity=affinity,
-                affinity_strength=2.0,
-            )
-        )
 
-        fitted = (
-            rng.random()
-            < p_fitting
-        )
+                "interactionType": (
+                    action
+                ),
 
-        if fitted:
-
-            interactions.append(
-                Interaction(
-                    productId=(
-                        product.product_id
-                    ),
-                    interactionType=FITTING,
-                    sequenceNo=sequence_no,
-                )
-            )
+                "sequenceNo": (
+                    sequence_no
+                ),
+            })
 
             sequence_no += 1
 
-        # -------------------------------------
-        # WISHLIST_ADD
-        #
-        # FITTING한 상품이면 찜 확률 증가
-        # -------------------------------------
+            # -----------------------------------------
+            # 이 행동으로 preference 변경
+            # -----------------------------------------
 
-        fitting_bonus = (
-            0.70
-            if fitted
-            else 0.0
-        )
-
-        p_wishlist = (
-            behavior_probability(
-                base=(
-                    session_wishlist_base
+            update_preference(
+                dynamic_state=(
+                    dynamic_state
                 ),
-                affinity=affinity,
-                affinity_strength=2.5,
-                extra_bias=fitting_bonus,
+                product=product,
+                action=action,
             )
+
+        # 오래된 선호는 조금씩 감소
+        decay_dynamic_state(
+            dynamic_state
         )
 
-        wishlist_added = (
-            rng.random()
-            < p_wishlist
-        )
+    return {
 
-        if wishlist_added:
+        "sessionId": (
+            session_index
+        ),
 
-            interactions.append(
-                Interaction(
-                    productId=(
-                        product.product_id
-                    ),
-                    interactionType=(
-                        WISHLIST_ADD
-                    ),
-                    sequenceNo=sequence_no,
-                )
-            )
+        # 아래 metadata는 생성 검증용.
+        # RecRec dataset에서는 사용하지 않는다.
+        "personaId": (
+            persona_id
+        ),
 
-            sequence_no += 1
+        "behaviorType": (
+            behavior_type
+        ),
 
-            # ---------------------------------
-            # REMOVE
-            #
-            # ADD 이후에만 발생
-            #
-            # affinity가 낮을수록
-            # REMOVE 가능성 증가
-            # ---------------------------------
+        "zoneOrientation": (
+            zone_orientation
+        ),
 
-            p_remove = (
-                behavior_probability(
-                    base=(
-                        session_remove_base
-                    ),
-                    affinity=affinity,
-                    affinity_strength=-2.0,
-                )
-            )
+        "gender": gender,
 
-            removed = (
-                rng.random()
-                < p_remove
-            )
+        "selectedProductIds": (
+            selected_product_ids
+        ),
 
-            if removed:
-
-                interactions.append(
-                    Interaction(
-                        productId=(
-                            product.product_id
-                        ),
-                        interactionType=(
-                            WISHLIST_REMOVE
-                        ),
-                        sequenceNo=sequence_no,
-                    )
-                )
-
-                sequence_no += 1
-
-    return SyntheticSession(
-        sessionId=session_id,
-        interactions=interactions,
-    )
-
-
-# =========================================================
-# Generate Dataset
-# =========================================================
-
-def generate_dataset(
-    products: list[Product],
-    sessions_per_persona: int = 1000,
-    seed: int = 42,
-) -> list[SyntheticSession]:
-
-    rng = np.random.default_rng(
-        seed
-    )
-
-    sessions = []
-
-    session_id = 1
-
-    for persona in PERSONAS:
-
-        for _ in range(
-            sessions_per_persona
-        ):
-
-            session = generate_session(
-                session_id=session_id,
-                persona=persona,
-                all_products=products,
-                rng=rng,
-            )
-
-            sessions.append(
-                session
-            )
-
-            session_id += 1
-
-    # Persona 생성 순서가 데이터에서
-    # 그대로 드러나는 것을 방지
-    rng.shuffle(
-        sessions
-    )
-
-    return sessions
-
-
-# =========================================================
-# Save JSONL
-# =========================================================
-
-def save_jsonl(
-    sessions: list[SyntheticSession],
-    output_path: str,
-):
-
-    with open(
-        output_path,
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        for session in sessions:
-
-            payload = {
-                "sessionId":
-                    session.sessionId,
-
-                "interactions": [
-                    asdict(
-                        interaction
-                    )
-
-                    for interaction
-                    in session.interactions
-                ],
-            }
-
-            file.write(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+        "interactions": (
+            interactions
+        ),
+    }
 
 
 # =========================================================
 # Main
 # =========================================================
 
-if __name__ == "__main__":
+def main():
 
-    EXCEL_PATH = (
-        "MCM_제품리스트_통합_추천모델용.xlsx"
+    random.seed(
+        SEED
     )
 
-    OUTPUT_PATH = (
-        "synthetic_interactions.jsonl"
+    np.random.seed(
+        SEED
     )
 
     products = (
-        load_products_from_excel(
-            EXCEL_PATH
-        )
+        load_products()
     )
 
     print(
@@ -633,28 +1118,77 @@ if __name__ == "__main__":
         f"{len(products)}"
     )
 
-    sessions = generate_dataset(
-        products=products,
+    sessions = []
 
-        # 9 Persona × 1000
-        # = 9000 sessions
-        sessions_per_persona=1000,
+    interaction_count = 0
 
-        seed=42,
-    )
+    persona_counter = Counter()
 
-    save_jsonl(
-        sessions=sessions,
-        output_path=OUTPUT_PATH,
-    )
+    behavior_counter = Counter()
 
-    total_interactions = sum(
-        len(
-            session.interactions
+    for session_index in range(
+        1,
+        NUM_SESSIONS + 1,
+    ):
+
+        session = generate_session(
+            session_index=(
+                session_index
+            ),
+            products=products,
         )
 
-        for session
-        in sessions
+        sessions.append(
+            session
+        )
+
+        interaction_count += len(
+            session[
+                "interactions"
+            ]
+        )
+
+        persona_counter[
+            session["personaId"]
+        ] += 1
+
+        for interaction in session[
+            "interactions"
+        ]:
+
+            behavior_counter[
+                interaction[
+                    "interactionType"
+                ]
+            ] += 1
+
+    with open(
+        OUTPUT_PATH,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        for session in sessions:
+
+            f.write(
+                json.dumps(
+                    session,
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    print()
+    print(
+        "================================="
+    )
+
+    print(
+        "Synthetic Generator"
+    )
+
+    print(
+        "================================="
     )
 
     print(
@@ -664,9 +1198,41 @@ if __name__ == "__main__":
 
     print(
         f"Generated interactions: "
-        f"{total_interactions}"
+        f"{interaction_count}"
     )
 
     print(
         f"Saved: {OUTPUT_PATH}"
     )
+
+    print()
+    print(
+        "Behavior counts:"
+    )
+
+    for action, count in (
+        behavior_counter.most_common()
+    ):
+
+        print(
+            f"  {action}: "
+            f"{count}"
+        )
+
+    print()
+    print(
+        "Persona counts:"
+    )
+
+    for persona_id in sorted(
+        persona_counter
+    ):
+
+        print(
+            f"  {persona_id}: "
+            f"{persona_counter[persona_id]}"
+        )
+
+
+if __name__ == "__main__":
+    main()

@@ -3,8 +3,8 @@ import math
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import create_datasets
-from recrec import RecRec
+from .dataset import create_datasets
+from .recrec import RecRec
 
 
 # =========================================================
@@ -12,7 +12,7 @@ from recrec import RecRec
 # =========================================================
 
 JSONL_PATH = (
-    "synthetic_interactions_v2.jsonl"
+    "synthetic_interactions.jsonl"
 )
 
 CATALOG_PATH = (
@@ -21,7 +21,7 @@ CATALOG_PATH = (
 
 CHECKPOINT_PATH = (
     "checkpoints/"
-    "recrec_v2_product_only_best.pt"
+    "recrec_product_only_best.pt"
 )
 
 MAX_SEQ_LEN = 64
@@ -352,6 +352,8 @@ def main():
                 "dropout"
             ]
         ),
+        recency_decay=config["recency_decay"],
+        action_weights=tuple(config["action_weights"]),
     )
 
     model.load_state_dict(

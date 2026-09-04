@@ -9,9 +9,10 @@ from .dataset import (
     BEHAVIOR_TO_ID,
     load_products_from_excel,
 )
+from .product_features import build_product_feature_matrix
 
 
-CHECKPOINT_PATH = "checkpoints/recrec_v2_best.pt"
+CHECKPOINT_PATH = "checkpoints/recrec_best.pt"
 CATALOG_PATH = "MCM_제품리스트_통합_추천모델용.xlsx"
 
 MAX_SEQ_LEN = 64
@@ -82,6 +83,14 @@ class RecRecInference:
             "model_config"
         ]
 
+        metadata_features = None
+        if config.get("use_content_features", False):
+            metadata_features = build_product_feature_matrix(
+                products,
+                self.mapper,
+                feature_dim=config["content_feature_dim"],
+            )
+
         self.model = RecRec(
             num_products=config[
                 "num_products"
@@ -113,6 +122,15 @@ class RecRecInference:
             dropout=config[
                 "dropout"
             ],
+            recency_decay=config[
+                "recency_decay"
+            ],
+            action_weights=tuple(config[
+                "action_weights"
+            ]),
+            pooling_mode=config.get("pooling_mode", "action_recency"),
+            metadata_features=metadata_features,
+            content_weight=config.get("content_weight", 1.0),
         )
 
         self.model.load_state_dict(

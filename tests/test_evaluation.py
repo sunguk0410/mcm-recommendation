@@ -73,7 +73,7 @@ class RecommendationEvaluationTest(unittest.TestCase):
             ],
             arInteractions=[
                 DumpableInteraction(70, "PRODUCT_SELECT", 1),
-                DumpableInteraction(70, "FITTING", 2),
+                DumpableInteraction(70, "FITTING_ADD", 2),
             ],
             memberWishlists=[SimpleNamespace(productId=70)],
             groundTruth=SimpleNamespace(

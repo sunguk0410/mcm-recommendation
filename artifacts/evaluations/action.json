@@ -1,0 +1,42 @@
+{
+  "checkpoint": "checkpoints\\ablations\\action.pt",
+  "epoch": 10,
+  "val_loss": 4.054254085472791,
+  "model_config": {
+    "num_products": 135,
+    "embedding_dim": 128,
+    "hidden_dim": 256,
+    "num_behavior_types": 6,
+    "recency_decay": 0.25,
+    "action_weights": [
+      0.0,
+      1.0,
+      1.5,
+      0.5,
+      2.0,
+      0.5
+    ],
+    "pooling_mode": "action",
+    "use_content_features": false,
+    "content_feature_dim": 0,
+    "content_weight": 1.0,
+    "num_refinement_steps": 6,
+    "num_inner_steps": 3,
+    "recursive_layers": 3,
+    "update_scale": 0.1,
+    "temperature": 0.07,
+    "dropout": 0.1
+  },
+  "metrics": {
+    "HR@1": 0.026934150645490852,
+    "NDCG@1": 0.026934150645490852,
+    "Precision@1": 0.026934150645490852,
+    "HR@5": 0.14888083960248907,
+    "NDCG@5": 0.08628096947707874,
+    "Precision@5": 0.029776167920497816,
+    "HR@10": 0.296089904337327,
+    "NDCG@10": 0.13335020190847557,
+    "Precision@10": 0.0296089904337327,
+    "MRR@10": 0.08510237041164909
+  }
+}
