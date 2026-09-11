@@ -1,6 +1,10 @@
 # Python environments
 .venv/
+.venv-image/
+artifacts/image_similarity/
+artifacts/synthetic_backups/
 venv/
+images/
 
 # Python caches and bytecode
 __pycache__/

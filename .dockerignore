@@ -5,6 +5,11 @@ __pycache__
 *.pyc
 
 .venv
+.venv-image
+images/
+artifacts/image_similarity/
+artifacts/synthetic_backups/
+src/synthetic_image_generator.py
 venv
 
 synthetic_interactions.jsonl

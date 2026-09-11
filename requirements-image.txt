@@ -1,0 +1,6 @@
+# Offline image similarity experiment; not needed by the recommendation API.
+torch
+transformers>=4.52,<5
+Pillow
+pandas
+openpyxl

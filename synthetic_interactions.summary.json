@@ -1,0 +1,28 @@
+{
+  "generator": "clip_single_category_v1",
+  "seed": 42,
+  "sessions": 9000,
+  "interactions": 112223,
+  "actions": {
+    "PRODUCT_SELECT": 59121,
+    "FITTING_ADD": 24181,
+    "WISHLIST_ADD": 18788,
+    "FITTING_REMOVE": 8268,
+    "WISHLIST_REMOVE": 1865
+  },
+  "categories": {
+    "ACCESSORIES": 1800,
+    "SHOES": 1800,
+    "TOP": 1800,
+    "BOTTOM": 1800,
+    "BAG": 1800
+  },
+  "products_selected": 134,
+  "training_targets": 50121,
+  "model": "openai/clip-vit-base-patch32",
+  "model_revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+  "embedding_sha256": "bd971e557f111ab780d78c4cbc02eb5b5344b94b9ddee84c803583ff66e8999b",
+  "output_sha256": "b905e373161ecedf82970eb754f1007e59581483f60b95dc7fa8797dc96e2fff",
+  "backup": "artifacts\\synthetic_backups\\bff96ad2ee52e8d86ecb1e0c076f9a8459b62167e07dad70bd16c8c2daee5cfa.jsonl",
+  "note": "Simulation assumptions, not observed customer preferences. No model retraining performed."
+}
