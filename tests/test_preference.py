@@ -19,8 +19,8 @@ def test_zone_preferences_preserve_share_of_total_dwell():
 
 
 def test_rec_weight_increases_gradually():
-    assert RecRecInference._rec_weight(2) == 0.70
-    assert RecRecInference._rec_weight(3) == 0.75
+    assert RecRecInference._rec_weight(2) == 0.40
+    assert RecRecInference._rec_weight(3) == 0.60
     assert RecRecInference._rec_weight(6) == 0.80
 
 

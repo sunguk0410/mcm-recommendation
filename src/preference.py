@@ -44,7 +44,7 @@ def build_product_preference_scores(
         zone_score = zone_preferences.get(product.category, {}).get(product.zone, 0.0)
         member_score = member_scores.get(product.product_id, 0.0)
         if has_zone and has_member:
-            score = 0.7 * zone_score + 0.3 * member_score
+            score = 0.8 * zone_score + 0.2 * member_score
         elif has_zone:
             score = zone_score
         else:

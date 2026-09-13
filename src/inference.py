@@ -294,9 +294,9 @@ class RecRecInference:
     @staticmethod
     def _rec_weight(interaction_count):
         if interaction_count <= 2:
-            return 0.70
+            return 0.40
         if interaction_count <= 5:
-            return 0.75
+            return 0.60
         return 0.80
 
     @staticmethod
